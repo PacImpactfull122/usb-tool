@@ -13,6 +13,16 @@ struct EndpointInfo {
     uint8_t  iface;
 };
 
+struct InterfaceInfo {
+    uint8_t  numero;
+    uint8_t  alternativo;
+    uint8_t  classe;
+    uint8_t  subclasse;
+    uint8_t  protocolo;
+    uint8_t  iString;
+    std::vector<EndpointInfo> endpoints;
+};
+
 // * item decodificado do hid report descriptor
 struct ItemHid {
     std::string tag;
@@ -24,14 +34,18 @@ struct ConfiguracaoUsb {
     uint8_t  numInterfaces;
     uint8_t  valorConfig;
     uint16_t totalBytes;
-    std::vector<EndpointInfo> endpoints;
+    std::vector<InterfaceInfo>  interfaces;
+    std::vector<EndpointInfo>   endpoints; // * todos os endpoints achatados para acesso rapido
 };
 
 // parseia o blob de configuracao completa e retorna estrutura decodificada
 ConfiguracaoUsb parsearConfiguracao(const std::vector<uint8_t>& blob);
 
-// imprime configuracao completa de forma legivel
+// imprime configuracao resumida (lista de endpoints)
 void imprimirConfiguracao(const ConfiguracaoUsb& cfg);
+
+// imprime configuracao completa com interfaces estruturadas
+void imprimirConfiguracaoCompleta(const ConfiguracaoUsb& cfg);
 
 // parseia e imprime o device descriptor
 void imprimirDescritorDispositivo(const std::vector<uint8_t>& blob);

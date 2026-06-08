@@ -330,6 +330,32 @@ std::vector<uint8_t> lerRelatorioHid(intptr_t handle) {
     return buf;
 }
 
+uint8_t detectarEndpointHid(intptr_t handle) {
+    auto blob = lerConfiguracaoCompleta(handle);
+    if (blob.size() < 9) return 0;
+
+    size_t pos = 0;
+    bool emIfaceHid = false;
+
+    while (pos + 2 <= blob.size()) {
+        uint8_t tam  = blob[pos];
+        uint8_t tipo = blob[pos + 1];
+        if (tam < 2 || pos + tam > blob.size()) break;
+
+        if (tipo == 0x04 && tam >= 9) {
+            // * classe 0x03 = hid
+            emIfaceHid = (blob[pos + 5] == 0x03);
+        } else if (tipo == 0x05 && tam >= 7 && emIfaceHid) {
+            uint8_t addr  = blob[pos + 2];
+            uint8_t attrs = blob[pos + 3];
+            // * interrupt IN: bit7=1 (IN) e bits1:0=11 (interrupt)
+            if ((addr & 0x80) && (attrs & 0x03) == 0x03) return addr;
+        }
+        pos += tam;
+    }
+    return 0;
+}
+
 std::vector<std::string> lerStrings(intptr_t handle) {
     std::vector<std::string> resultado;
     // * indice 0 retorna lista de idiomas, indices 1..127 sao as strings

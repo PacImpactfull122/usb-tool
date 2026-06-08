@@ -63,6 +63,9 @@ bool desconectarDriver(intptr_t handle, uint32_t iface);
 // retorna o blob do hid report descriptor da primeira interface hid encontrada
 [[nodiscard]] std::vector<uint8_t> lerRelatorioHid(intptr_t handle);
 
+// detecta o primeiro endpoint interrupt IN de uma interface HID, retorna 0 se nao encontrar
+[[nodiscard]] uint8_t detectarEndpointHid(intptr_t handle);
+
 // leitura de todos os string descriptors disponiveis (indices 1..N)
 [[nodiscard]] std::vector<std::string> lerStrings(intptr_t handle);
 

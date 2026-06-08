@@ -18,6 +18,7 @@ static void exibirAjuda(const char* prog) {
         "inspecao:\n"
         "  listar\n"
         "  info           <indice>\n"
+        "  analisar       <indice>           -- analise forense completa\n"
         "  decodificar    <indice>           -- todos os descritores estruturados\n"
         "  dump-hid       <indice>           -- hid report descriptor decodificado\n"
         "  scan-ep        <indice>           -- todos os endpoints e atributos\n"
@@ -28,7 +29,7 @@ static void exibirAjuda(const char* prog) {
         "  descritor      <indice> <tipo_hex> [indice_hex]\n"
         "  controle       <indice> <bmRT> <bReq> <wVal> <wIdx> <hex_dados> <r|w>\n"
         "  bulk           <indice> <endpoint> <hex_dados> <r|w>\n"
-        "  hid-ler        <indice> <endpoint> [tam_buf] [timeout_ms]\n"
+        "  hid-ler        <indice> [endpoint] [tam_buf] [timeout_ms]\n"
         "\n"
         "storage:\n"
         "  ler-setor      <indice> <lba> <qtd>\n"
@@ -121,12 +122,12 @@ static int executarComando(const std::string& cmd, int argc, char* argv[],
         }
 
         std::printf("\n=== configuration descriptor ===\n");
-        auto cfg = lerConfiguracaoCompleta(handle);
-        if (!cfg.empty()) {
-            auto parsed = parsearConfiguracao(cfg);
-            imprimirConfiguracao(parsed);
-            std::printf("\n  raw (%zu bytes):\n", cfg.size());
-            hexdump(cfg.data(), cfg.size());
+        auto cfgBlob = lerConfiguracaoCompleta(handle);
+        if (!cfgBlob.empty()) {
+            auto cfg = parsearConfiguracao(cfgBlob);
+            imprimirConfiguracaoCompleta(cfg);
+            std::printf("  raw (%zu bytes):\n", cfgBlob.size());
+            hexdump(cfgBlob.data(), cfgBlob.size());
         }
 
         std::printf("\n=== string descriptors ===\n");
@@ -134,6 +135,67 @@ static int executarComando(const std::string& cmd, int argc, char* argv[],
         for (size_t i = 0; i < strings.size(); ++i)
             std::printf("  [%zu] %s\n", i + 1, strings[i].c_str());
 
+        return 0;
+    }
+
+    if (cmd == "analisar") {
+        // * analise forense: identifica tipo de dispositivo, endpoints uteis, capacidades
+        auto devBlob = lerDescritor(handle, 0x01, 0);
+        auto cfgBlob = lerConfiguracaoCompleta(handle);
+        auto strings = lerStrings(handle);
+
+        std::printf("=== analise do dispositivo [%d] ===\n\n", idx);
+
+        if (!devBlob.empty()) imprimirDescritorDispositivo(devBlob);
+
+        if (!strings.empty()) {
+            std::printf("\n  strings:\n");
+            for (size_t i = 0; i < strings.size(); ++i)
+                std::printf("    [%zu] %s\n", i + 1, strings[i].c_str());
+        }
+
+        if (!cfgBlob.empty()) {
+            auto cfg = parsearConfiguracao(cfgBlob);
+            std::printf("\n=== interfaces e endpoints ===\n\n");
+            imprimirConfiguracaoCompleta(cfg);
+
+            // * analise de capacidades baseada nas interfaces encontradas
+            std::printf("=== capacidades detectadas ===\n\n");
+            bool temHid = false, temStorage = false, temAudio = false,
+                 temVideo = false, temDfu = false, temHub = false;
+
+            for (const auto& iface : cfg.interfaces) {
+                if (iface.classe == 0x03) temHid     = true;
+                if (iface.classe == 0x08) temStorage = true;
+                if (iface.classe == 0x01) temAudio   = true;
+                if (iface.classe == 0x0e) temVideo   = true;
+                if (iface.classe == 0xfe && iface.subclasse == 0x01) temDfu = true;
+                if (iface.classe == 0x09) temHub     = true;
+            }
+
+            if (temHid) {
+                uint8_t ep = detectarEndpointHid(handle);
+                std::printf("  hid detectado\n");
+                if (ep) std::printf("    endpoint interrupt IN: 0x%02x\n", ep);
+                std::printf("    comando: sudo ./usbctl hid-ler %d\n", idx);
+
+                auto hid = lerRelatorioHid(handle);
+                if (!hid.empty()) {
+                    std::printf("\n=== hid report descriptor ===\n\n");
+                    imprimirRelatorioHid(hid);
+                }
+            }
+            if (temStorage) {
+                std::printf("  armazenamento em massa detectado\n");
+                std::printf("    comando: sudo ./usbctl ler-setor %d 0 1\n", idx);
+            }
+            if (temAudio) std::printf("  audio detectado\n");
+            if (temVideo) std::printf("  video detectado\n");
+            if (temDfu)   std::printf("  dfu detectado  -- suporta bootloader\n");
+            if (temHub)   std::printf("  hub usb detectado\n");
+            if (!temHid && !temStorage && !temAudio && !temVideo && !temDfu && !temHub)
+                std::printf("  classe de dispositivo nao reconhecida automaticamente\n");
+        }
         return 0;
     }
 
@@ -154,17 +216,9 @@ static int executarComando(const std::string& cmd, int argc, char* argv[],
             return 1;
         }
         auto cfg = parsearConfiguracao(blob);
-        std::printf("dispositivo %d: %zu endpoint(s) encontrado(s)\n\n",
-                    idx, cfg.endpoints.size());
-
-        for (const auto& ep : cfg.endpoints) {
-            std::string tipo = tipoTransferencia(ep.atributos);
-            std::string dir  = direcaoEndpoint(ep.endereco);
-            std::printf("  ep 0x%02x  iface=%d  %-12s %-4s  max=%4d bytes  intervalo=%d\n",
-                        ep.endereco, ep.iface,
-                        tipo.c_str(), dir.c_str(),
-                        ep.maxPacote, ep.intervalo);
-        }
+        std::printf("dispositivo %d: %zu endpoint(s) em %zu interface(s)\n\n",
+                    idx, cfg.endpoints.size(), cfg.interfaces.size());
+        imprimirConfiguracaoCompleta(cfg);
         return 0;
     }
 
@@ -220,12 +274,34 @@ static int executarComando(const std::string& cmd, int argc, char* argv[],
     }
 
     if (cmd == "hid-ler") {
-        if (argc < 4) { exibirAjuda(argv[0]); return 1; }
-        uint8_t  ep      = static_cast<uint8_t> (std::strtoul(argv[3], nullptr, 16));
-        uint32_t tam     = argc > 4 ? static_cast<uint32_t>(std::strtoul(argv[4], nullptr, 10)) : 8;
-        uint32_t timeout = argc > 5 ? static_cast<uint32_t>(std::strtoul(argv[5], nullptr, 10)) : 5000;
+        if (argc < 3) { exibirAjuda(argv[0]); return 1; }
 
-        // * desconecta hid do kernel para liberar acesso via usbfs
+        // * se endpoint nao fornecido, detecta automaticamente via config descriptor
+        uint8_t ep = 0;
+        int     proxArg = 3;
+
+        if (argc > 3) {
+            // * distingue endpoint (hex, começa com 0x ou tem valor > 9) de tam_buf (decimal pequeno)
+            char* fim = nullptr;
+            long  val = std::strtol(argv[3], &fim, 0);
+            if (*fim == '\0' && val > 9) {
+                ep = static_cast<uint8_t>(val);
+                proxArg = 4;
+            }
+        }
+
+        if (ep == 0) {
+            ep = detectarEndpointHid(handle);
+            if (ep == 0) {
+                std::fprintf(stderr, "nenhum endpoint hid interrupt IN encontrado (especifique manualmente)\n");
+                return 1;
+            }
+            std::printf("endpoint detectado: 0x%02x\n", ep);
+        }
+
+        uint32_t tam     = (argc > proxArg)     ? static_cast<uint32_t>(std::strtoul(argv[proxArg],     nullptr, 10)) : 8;
+        uint32_t timeout = (argc > proxArg + 1) ? static_cast<uint32_t>(std::strtoul(argv[proxArg + 1], nullptr, 10)) : 5000;
+
         desconectarDriver(handle, 0);
         if (!reivindicarInterface(handle, 0)) {
             std::fprintf(stderr, "falha ao reivindicar interface (dispositivo em uso?)\n");
@@ -233,7 +309,7 @@ static int executarComando(const std::string& cmd, int argc, char* argv[],
         }
 
         std::signal(SIGINT, tratarSinal);
-        std::printf("lendo hid reports do endpoint %02x (ctrl+c para parar)\n\n", ep);
+        std::printf("lendo hid reports do endpoint 0x%02x (ctrl+c para parar)\n\n", ep);
 
         uint64_t pacote = 0;
         while (rodando) {

@@ -287,22 +287,31 @@ ConfiguracaoUsb parsearConfiguracao(const std::vector<uint8_t>& blob) {
     cfg.valorConfig   = blob[5];
 
     size_t pos = 0;
-    uint8_t ifaceAtual = 0;
+    InterfaceInfo* ifaceAtual = nullptr;
 
     while (pos + 2 <= blob.size()) {
         uint8_t tam  = blob[pos];
         uint8_t tipo = blob[pos + 1];
         if (tam < 2 || pos + tam > blob.size()) break;
 
-        if (tipo == 0x04 && tam >= 9) { // interface
-            ifaceAtual = blob[pos + 2];
-        } else if (tipo == 0x05 && tam >= 7) { // endpoint
+        if (tipo == 0x04 && tam >= 9) {
+            InterfaceInfo iface{};
+            iface.numero      = blob[pos + 2];
+            iface.alternativo = blob[pos + 3];
+            iface.classe      = blob[pos + 5];
+            iface.subclasse   = blob[pos + 6];
+            iface.protocolo   = blob[pos + 7];
+            iface.iString     = blob[pos + 8];
+            cfg.interfaces.push_back(iface);
+            ifaceAtual = &cfg.interfaces.back();
+        } else if (tipo == 0x05 && tam >= 7) {
             EndpointInfo ep{};
             ep.endereco  = blob[pos + 2];
             ep.atributos = blob[pos + 3];
             ep.maxPacote = static_cast<uint16_t>(blob[pos + 4] | (blob[pos + 5] << 8));
             ep.intervalo = blob[pos + 6];
-            ep.iface     = ifaceAtual;
+            ep.iface     = ifaceAtual ? ifaceAtual->numero : 0;
+            if (ifaceAtual) ifaceAtual->endpoints.push_back(ep);
             cfg.endpoints.push_back(ep);
         }
         pos += tam;
@@ -314,13 +323,34 @@ void imprimirConfiguracao(const ConfiguracaoUsb& cfg) {
     std::printf("  configuracao: %d interface(s)  total: %d bytes\n\n",
                 cfg.numInterfaces, cfg.totalBytes);
 
-    for (size_t i = 0; i < cfg.endpoints.size(); ++i) {
-        const auto& ep = cfg.endpoints[i];
-        std::printf("  endpoint 0x%02x  iface=%d  %s  %s  max=%d bytes  intervalo=%d\n",
+    for (const auto& ep : cfg.endpoints) {
+        std::printf("  endpoint 0x%02x  iface=%d  %-12s %-4s  max=%4d bytes  intervalo=%d\n",
                     ep.endereco, ep.iface,
                     tipoTransferencia(ep.atributos).c_str(),
                     direcaoEndpoint(ep.endereco).c_str(),
                     ep.maxPacote, ep.intervalo);
+    }
+}
+
+void imprimirConfiguracaoCompleta(const ConfiguracaoUsb& cfg) {
+    std::printf("  configuracao %d  |  %d interface(s)  |  %d bytes total\n\n",
+                cfg.valorConfig, cfg.numInterfaces, cfg.totalBytes);
+
+    for (const auto& iface : cfg.interfaces) {
+        std::printf("  interface %d (alt=%d)\n", iface.numero, iface.alternativo);
+        std::printf("    classe    : 0x%02x (%s)\n", iface.classe, nomeClasseIface(iface.classe));
+        std::printf("    subclasse : 0x%02x\n", iface.subclasse);
+        std::printf("    protocolo : 0x%02x\n", iface.protocolo);
+        std::printf("    endpoints : %zu\n", iface.endpoints.size());
+
+        for (const auto& ep : iface.endpoints) {
+            std::printf("      ep 0x%02x  %-12s %-4s  max=%4d  intervalo=%d\n",
+                        ep.endereco,
+                        tipoTransferencia(ep.atributos).c_str(),
+                        direcaoEndpoint(ep.endereco).c_str(),
+                        ep.maxPacote, ep.intervalo);
+        }
+        std::putchar('\n');
     }
 }
 
