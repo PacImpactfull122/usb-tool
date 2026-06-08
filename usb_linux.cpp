@@ -10,6 +10,7 @@
 #include <fstream>
 #include <cstring>
 #include <cstdio>
+#include <csignal>
 
 static constexpr uint32_t TAM_SETOR = 512;
 
@@ -285,6 +286,183 @@ bool entrarModoBootloader(intptr_t handle) {
     ct.timeout      = 2000;
     ct.data         = nullptr;
     return ioctl(static_cast<int>(handle), USBDEVFS_CONTROL, &ct) >= 0;
+}
+
+std::vector<uint8_t> lerConfiguracaoCompleta(intptr_t handle) {
+    // * primeiro lemos os 9 bytes do cabecalho para descobrir o tamanho total
+    std::vector<uint8_t> cabecalho(9, 0);
+    struct usbdevfs_ctrltransfer ct{};
+    ct.bRequestType = USB_DIR_IN | USB_TYPE_STANDARD | USB_RECIP_DEVICE;
+    ct.bRequest     = USB_REQ_GET_DESCRIPTOR;
+    ct.wValue       = static_cast<uint16_t>(USB_DT_CONFIG << 8);
+    ct.wIndex       = 0;
+    ct.wLength      = 9;
+    ct.timeout      = 1000;
+    ct.data         = cabecalho.data();
+    if (ioctl(static_cast<int>(handle), USBDEVFS_CONTROL, &ct) < 0) return {};
+
+    uint16_t total = static_cast<uint16_t>(cabecalho[2] | (cabecalho[3] << 8));
+    if (total < 9 || total > 4096) return cabecalho;
+
+    std::vector<uint8_t> blob(total, 0);
+    ct.wLength = total;
+    ct.data    = blob.data();
+    int ret = ioctl(static_cast<int>(handle), USBDEVFS_CONTROL, &ct);
+    if (ret < 0) return cabecalho;
+    blob.resize(static_cast<size_t>(ret));
+    return blob;
+}
+
+std::vector<uint8_t> lerRelatorioHid(intptr_t handle) {
+    // * hid report descriptor: tipo 0x22, pedido via interface (wIndex=0)
+    std::vector<uint8_t> buf(512, 0);
+    struct usbdevfs_ctrltransfer ct{};
+    ct.bRequestType = USB_DIR_IN | USB_TYPE_STANDARD | USB_RECIP_INTERFACE;
+    ct.bRequest     = USB_REQ_GET_DESCRIPTOR;
+    ct.wValue       = static_cast<uint16_t>(0x22 << 8);
+    ct.wIndex       = 0;
+    ct.wLength      = static_cast<uint16_t>(buf.size());
+    ct.timeout      = 1000;
+    ct.data         = buf.data();
+    int ret = ioctl(static_cast<int>(handle), USBDEVFS_CONTROL, &ct);
+    if (ret < 0) return {};
+    buf.resize(static_cast<size_t>(ret));
+    return buf;
+}
+
+std::vector<std::string> lerStrings(intptr_t handle) {
+    std::vector<std::string> resultado;
+    // * indice 0 retorna lista de idiomas, indices 1..127 sao as strings
+    for (uint8_t idx = 1; idx < 128; ++idx) {
+        std::vector<uint8_t> buf(255, 0);
+        struct usbdevfs_ctrltransfer ct{};
+        ct.bRequestType = USB_DIR_IN | USB_TYPE_STANDARD | USB_RECIP_DEVICE;
+        ct.bRequest     = USB_REQ_GET_DESCRIPTOR;
+        ct.wValue       = static_cast<uint16_t>((USB_DT_STRING << 8) | idx);
+        ct.wIndex       = 0x0409; // ingles americano
+        ct.wLength      = static_cast<uint16_t>(buf.size());
+        ct.timeout      = 500;
+        ct.data         = buf.data();
+        int ret = ioctl(static_cast<int>(handle), USBDEVFS_CONTROL, &ct);
+        if (ret < 2) break;
+        buf.resize(static_cast<size_t>(ret));
+
+        std::string s;
+        for (size_t i = 2; i + 1 < buf.size(); i += 2) {
+            uint16_t cp = static_cast<uint16_t>(buf[i] | (buf[i+1] << 8));
+            if (cp == 0) break;
+            if (cp < 0x80) s += static_cast<char>(cp);
+            else s += '?';
+        }
+        if (s.empty()) break;
+        resultado.push_back(s);
+    }
+    return resultado;
+}
+
+// * estrutura de pacote usbmon conforme documentacao do kernel
+struct __attribute__((packed)) UsbmonPkt {
+    uint64_t id;
+    uint8_t  tipo;
+    uint8_t  xferTipo;
+    uint8_t  epnum;
+    uint8_t  devnum;
+    uint16_t busnum;
+    int8_t   flagSetup;
+    int8_t   flagData;
+    int64_t  tsSec;
+    int32_t  tsUsec;
+    int32_t  status;
+    uint32_t comprimento;
+    uint32_t capturado;
+    uint8_t  setup[8];
+    int32_t  intervalo;
+    int32_t  quadroInicio;
+    uint32_t flagsXfer;
+    uint32_t ndesc;
+};
+
+static volatile bool monitorandoAtivo = true;
+static void tratarSinalMon(int) { monitorandoAtivo = false; }
+
+void monitorar(int bus, uint8_t addr, uint32_t maxPacotes) {
+    char caminho[32];
+    // * usbmon0 captura todos os barramentos, usbmonN captura barramento N
+    std::snprintf(caminho, sizeof(caminho), "/dev/usbmon%d", bus < 0 ? 0 : bus);
+
+    int fd = open(caminho, O_RDONLY);
+    if (fd < 0) {
+        std::fprintf(stderr,
+            "nao foi possivel abrir %s\n"
+            "verifique se o modulo usbmon esta carregado:\n"
+            "  sudo modprobe usbmon\n"
+            "ou monte o debugfs:\n"
+            "  sudo mount -t debugfs none /sys/kernel/debug\n", caminho);
+        return;
+    }
+
+    static const char* tiposXfer[] = { "iso", "int", "ctrl", "bulk" };
+
+    std::signal(SIGINT, tratarSinalMon);
+    monitorandoAtivo = true;
+
+    std::printf("monitorando %s  (addr=%d, ctrl+c para parar)\n\n",
+                caminho, addr);
+    std::printf("%-18s %-4s %-5s %-4s ep   dev  status  len  dados\n",
+                "timestamp", "tipo", "xfer", "dir");
+    std::printf("%-18s %-4s %-5s %-4s %-4s %-4s %-7s %-4s\n",
+                "------------------","----","-----","----","----","----","-------","----");
+
+    // * buffer para cabecalho mais payload de ate 64 bytes
+    constexpr size_t TAM_BUF = sizeof(UsbmonPkt) + 64;
+    uint8_t buf[TAM_BUF];
+
+    uint32_t contagem = 0;
+    while (monitorandoAtivo && (maxPacotes == 0 || contagem < maxPacotes)) {
+        ssize_t n = read(fd, buf, TAM_BUF);
+        if (n < static_cast<ssize_t>(sizeof(UsbmonPkt))) {
+            if (!monitorandoAtivo) break;
+            continue;
+        }
+
+        UsbmonPkt* pkt = reinterpret_cast<UsbmonPkt*>(buf);
+
+        if (addr != 0 && pkt->devnum != addr) continue;
+
+        uint8_t ep  = pkt->epnum & 0x7f;
+        uint8_t dir = (pkt->epnum & 0x80) ? 1 : 0;
+        uint8_t xt  = pkt->xferTipo < 4 ? pkt->xferTipo : 3;
+        char    tp  = (pkt->tipo == 'S') ? 'S' : (pkt->tipo == 'C') ? 'C' : 'E';
+
+        std::printf("%10lld.%06d  %c    %-5s %-4s %02x   %-4d %-7d %-4u ",
+                    static_cast<long long>(pkt->tsSec), pkt->tsUsec,
+                    tp,
+                    tiposXfer[xt],
+                    dir ? "IN " : "OUT",
+                    ep, pkt->devnum,
+                    pkt->status,
+                    pkt->comprimento);
+
+        // * mostra os primeiros bytes do payload capturado
+        uint32_t mostrar = pkt->capturado < 16 ? pkt->capturado : 16;
+        if (mostrar > 0 && pkt->flagData == 0) {
+            const uint8_t* payload = buf + sizeof(UsbmonPkt);
+            for (uint32_t i = 0; i < mostrar; ++i)
+                std::printf("%02x ", payload[i]);
+        } else if (pkt->flagSetup == 0 && tp == 'S') {
+            // * setup packet decodificado
+            std::printf("setup: %02x %02x %02x%02x %02x%02x %02x%02x",
+                pkt->setup[0], pkt->setup[1],
+                pkt->setup[3], pkt->setup[2],
+                pkt->setup[5], pkt->setup[4],
+                pkt->setup[7], pkt->setup[6]);
+        }
+        std::putchar('\n');
+        ++contagem;
+    }
+
+    close(fd);
+    std::printf("\n%u pacotes capturados\n", contagem);
 }
 
 #endif // __linux__

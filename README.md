@@ -6,9 +6,13 @@ Ferramenta de linha de comando em C++17 para interacao direta com hardware USB n
 
 - Enumeracao de dispositivos USB com classe, velocidade e protocolo via sysfs (Linux) ou SetupAPI (Windows)
 - Informacoes detalhadas de um dispositivo especifico
+- Decodificacao completa de todos os descritores: device, configuration, interface, endpoint, string
+- Parser de HID report descriptor com decodificacao de usage pages, collections, Input/Output/Feature
+- Scan de todos os endpoints (endereco, tipo de transferencia, direcao, max packet size, intervalo)
+- Leitura de todos os string descriptors com conversao UTF-16LE para UTF-8
+- Captura de trafego USB raw via usbmon com decodificacao de pacotes (requer modulo usbmon)
 - Reset de dispositivo via usbfs / IOCTL
-- Leitura de descritores USB (device, configuration, string, HID report, etc.)
-- Transferencias de controle, bulk e interrupt raw
+- Transferencias de controle, bulk e interrupt raw com hexdump estruturado
 - Leitura de HID reports em loop via endpoint interrupt (teclados, mouses, gamepads)
 - Leitura e escrita de setores raw via protocolo USB MSC BOT (Linux)
 - Leitura e escrita de setores raw via ReadFile/WriteFile OVERLAPPED (Windows)
@@ -76,7 +80,135 @@ Saida exemplo:
      /sys/bus/usb/devices/1-2/
 ```
 
-### Informacoes detalhadas de um dispositivo
+### Decodificacao completa de descritores
+
+Parseia e exibe de forma estruturada o device descriptor, configuration descriptor (com todas as interfaces e endpoints) e todos os string descriptors:
+
+```bash
+sudo ./usbctl decodificar 0
+```
+
+Saida exemplo (teclado HID):
+```
+=== device descriptor ===
+  bcdUSB           : 2.00
+  bDeviceClass     : 0x00 (definida por interface)
+  bMaxPacketSize0  : 8 bytes
+  idVendor         : 04d9
+  idProduct        : a01c
+  bNumConfigurations: 1
+
+  raw:
+  0000  12 01 00 02 00 00 00 08  d9 04 1c a0 10 01 01 02  |................|
+  0010  03 01                                             |..|
+
+=== configuration descriptor ===
+  configuracao: 2 interface(s)  total: 59 bytes
+
+  endpoint 0x81  iface=0  interrupt     IN   max=   8 bytes  intervalo=10
+  endpoint 0x82  iface=1  interrupt     IN   max=   3 bytes  intervalo=10
+
+=== string descriptors ===
+  [1] SINO WEALTH ELECTRONIC LTD.
+  [2] USB Keyboard
+  [3] SN0000000001
+```
+
+### Scan de endpoints
+
+Lista todos os endpoints do dispositivo com atributos completos:
+
+```bash
+sudo ./usbctl scan-ep 0
+```
+
+Saida exemplo:
+```
+dispositivo 0: 2 endpoint(s) encontrado(s)
+
+  ep 0x81  iface=0  interrupt     IN    max=   8 bytes  intervalo=10
+  ep 0x82  iface=1  interrupt     IN    max=   3 bytes  intervalo=10
+```
+
+### HID report descriptor decodificado
+
+Parseia o HID report descriptor e exibe os itens estruturados com nomes de usage pages e usages conhecidos:
+
+```bash
+sudo ./usbctl dump-hid 0
+```
+
+Saida exemplo (teclado):
+```
+  hid report descriptor (63 bytes)
+
+  hex: 05 01 09 06 a1 01 05 07 ...
+
+  itens decodificados:
+
+    Usage Page(generic desktop)  [0x0001]
+    Usage(keyboard)  [0x0006]
+    Collection(Application)
+      Usage Page(keyboard)  [0x0007]
+      Usage Min(0x00e0)
+      Usage Max(0x00e7)
+      Logical Min(0)
+      Logical Max(1)
+      Report Size(1 bits)
+      Report Count(8)
+      Input(Data,Var,Abs)  [0x02]
+      Report Size(8 bits)
+      Report Count(1)
+      Input(Const,Array,Abs)  [0x01]
+      Report Size(8 bits)
+      Report Count(6)
+      Usage Min(0x0000)
+      Usage Max(0x00ff)
+      Logical Min(0)
+      Logical Max(255)
+      Input(Data,Array,Abs)  [0x00]
+    End Collection
+```
+
+### String descriptors
+
+```bash
+sudo ./usbctl strings 0
+```
+
+### Monitoramento de trafego USB (usbmon)
+
+Captura e decodifica todos os pacotes USB em tempo real. Requer o modulo `usbmon` carregado:
+
+```bash
+# carregar o modulo (uma vez por boot)
+sudo modprobe usbmon
+
+# monitorar todos os dispositivos em todos os barramentos
+sudo ./usbctl monitorar
+
+# monitorar barramento 1
+sudo ./usbctl monitorar 1
+
+# monitorar barramento 1, apenas dispositivo com endereco 3
+sudo ./usbctl monitorar 1 3
+
+# capturar apenas os primeiros 100 pacotes
+sudo ./usbctl monitorar 1 3 100
+```
+
+Saida exemplo:
+```
+monitorando /dev/usbmon1  (addr=3, ctrl+c para parar)
+
+timestamp          tipo xfer  dir  ep   dev  status  len  dados
+------------------  ---- ----- ---- ---- ---- ------- ----
+  1718123456.001234  S    int   IN   81   3    0       8    00 00 04 00 00 00 00 00
+  1718123456.012345  C    int   IN   81   3    0       8    00 00 04 00 00 00 00 00
+  1718123456.023456  S    int   IN   81   3    0       8    00 00 00 00 00 00 00 00
+```
+
+
 
 ```bash
 sudo ./usbctl info 0
@@ -202,8 +334,10 @@ sudo ./usbctl bootloader 0
 ```
 usbctl/
   usb.h            interface comum entre plataformas
-  usb_linux.cpp    implementacao Linux (usbfs, ioctl, sysfs, protocolo BOT)
+  usb_linux.cpp    implementacao Linux (usbfs, ioctl, sysfs, protocolo BOT, usbmon)
   usb_windows.cpp  implementacao Windows (SetupAPI, DeviceIoControl, OVERLAPPED I/O)
+  descritor.h      interface do parser de descritores e HID report decoder
+  descritor.cpp    parser completo: device/config/interface/endpoint/string/HID report
   main.cpp         CLI e despacho de comandos
   Makefile         build para Linux
   Makefile.win     build para Windows (MinGW)

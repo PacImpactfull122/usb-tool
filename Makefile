@@ -1,7 +1,7 @@
 CXX      = g++
 CXXFLAGS = -std=c++17 -O2 -Wall -Wextra -Wpedantic
 TARGET   = usbctl
-SRCS     = main.cpp usb_linux.cpp
+SRCS     = main.cpp usb_linux.cpp descritor.cpp
 PREFIX   = /usr/local
 
 .PHONY: all debug install clean

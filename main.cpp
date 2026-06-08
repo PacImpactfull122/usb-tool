@@ -1,4 +1,5 @@
 #include "usb.h"
+#include "descritor.h"
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -14,17 +15,28 @@ static void exibirAjuda(const char* prog) {
     std::printf(
         "uso: %s <comando> [args]\n"
         "\n"
-        "comandos:\n"
+        "inspecao:\n"
         "  listar\n"
         "  info           <indice>\n"
+        "  decodificar    <indice>           -- todos os descritores estruturados\n"
+        "  dump-hid       <indice>           -- hid report descriptor decodificado\n"
+        "  scan-ep        <indice>           -- todos os endpoints e atributos\n"
+        "  strings        <indice>           -- todos os string descriptors\n"
+        "\n"
+        "transferencias:\n"
         "  resetar        <indice>\n"
         "  descritor      <indice> <tipo_hex> [indice_hex]\n"
         "  controle       <indice> <bmRT> <bReq> <wVal> <wIdx> <hex_dados> <r|w>\n"
         "  bulk           <indice> <endpoint> <hex_dados> <r|w>\n"
         "  hid-ler        <indice> <endpoint> [tam_buf] [timeout_ms]\n"
+        "\n"
+        "storage:\n"
         "  ler-setor      <indice> <lba> <qtd>\n"
         "  escrever-setor <indice> <lba> <hex_dados>\n"
-        "  bootloader     <indice>\n",
+        "\n"
+        "outros:\n"
+        "  bootloader     <indice>\n"
+        "  monitorar      [bus] [addr] [max_pacotes]  -- captura via usbmon\n",
         prog ? prog : "usbctl");
 }
 
@@ -51,19 +63,12 @@ static const char* nomeclasse(uint8_t cls) {
         case 0x00: return "definida por interface";
         case 0x02: return "comunicacao";
         case 0x03: return "hid";
-        case 0x05: return "fisico";
         case 0x06: return "imagem";
         case 0x07: return "impressora";
         case 0x08: return "armazenamento em massa";
         case 0x09: return "hub";
-        case 0x0a: return "cdc dados";
-        case 0x0b: return "cartao inteligente";
-        case 0x0d: return "seguranca de conteudo";
         case 0x0e: return "video";
-        case 0x0f: return "saude pessoal";
-        case 0x10: return "audio video";
         case 0xe0: return "controlador wireless";
-        case 0xfe: return "especifico de aplicacao";
         case 0xff: return "especifico de fabricante";
         default:   return "desconhecida";
     }
@@ -96,7 +101,7 @@ static void imprimirInfo(int idx, const DispositivoUsb& dev) {
 }
 
 static int executarComando(const std::string& cmd, int argc, char* argv[],
-                           intptr_t handle) {
+                           intptr_t handle, int idx) {
     if (cmd == "resetar") {
         if (!resetarDispositivo(handle)) {
             std::fprintf(stderr, "falha ao resetar\n");
@@ -106,12 +111,80 @@ static int executarComando(const std::string& cmd, int argc, char* argv[],
         return 0;
     }
 
+    if (cmd == "decodificar") {
+        std::printf("=== device descriptor ===\n");
+        auto dev = lerDescritor(handle, 0x01, 0);
+        if (!dev.empty()) {
+            imprimirDescritorDispositivo(dev);
+            std::printf("\n  raw:\n");
+            hexdump(dev.data(), dev.size());
+        }
+
+        std::printf("\n=== configuration descriptor ===\n");
+        auto cfg = lerConfiguracaoCompleta(handle);
+        if (!cfg.empty()) {
+            auto parsed = parsearConfiguracao(cfg);
+            imprimirConfiguracao(parsed);
+            std::printf("\n  raw (%zu bytes):\n", cfg.size());
+            hexdump(cfg.data(), cfg.size());
+        }
+
+        std::printf("\n=== string descriptors ===\n");
+        auto strings = lerStrings(handle);
+        for (size_t i = 0; i < strings.size(); ++i)
+            std::printf("  [%zu] %s\n", i + 1, strings[i].c_str());
+
+        return 0;
+    }
+
+    if (cmd == "dump-hid") {
+        auto blob = lerRelatorioHid(handle);
+        if (blob.empty()) {
+            std::fprintf(stderr, "falha ao ler hid report descriptor (dispositivo e hid?)\n");
+            return 1;
+        }
+        imprimirRelatorioHid(blob);
+        return 0;
+    }
+
+    if (cmd == "scan-ep") {
+        auto blob = lerConfiguracaoCompleta(handle);
+        if (blob.empty()) {
+            std::fprintf(stderr, "falha ao ler configuracao\n");
+            return 1;
+        }
+        auto cfg = parsearConfiguracao(blob);
+        std::printf("dispositivo %d: %zu endpoint(s) encontrado(s)\n\n",
+                    idx, cfg.endpoints.size());
+
+        for (const auto& ep : cfg.endpoints) {
+            std::string tipo = tipoTransferencia(ep.atributos);
+            std::string dir  = direcaoEndpoint(ep.endereco);
+            std::printf("  ep 0x%02x  iface=%d  %-12s %-4s  max=%4d bytes  intervalo=%d\n",
+                        ep.endereco, ep.iface,
+                        tipo.c_str(), dir.c_str(),
+                        ep.maxPacote, ep.intervalo);
+        }
+        return 0;
+    }
+
+    if (cmd == "strings") {
+        auto strings = lerStrings(handle);
+        if (strings.empty()) {
+            std::printf("nenhuma string encontrada\n");
+            return 0;
+        }
+        for (size_t i = 0; i < strings.size(); ++i)
+            std::printf("[%zu] %s\n", i + 1, strings[i].c_str());
+        return 0;
+    }
+
     if (cmd == "descritor") {
         uint8_t tipo = argc > 3 ? static_cast<uint8_t>(std::strtoul(argv[3], nullptr, 16)) : 0x01;
         uint8_t ind  = argc > 4 ? static_cast<uint8_t>(std::strtoul(argv[4], nullptr, 16)) : 0x00;
         auto dados = lerDescritor(handle, tipo, ind);
         if (dados.empty()) { std::fprintf(stderr, "falha ao ler descritor\n"); return 1; }
-        imprimirBytes(dados);
+        hexdump(dados.data(), dados.size());
         return 0;
     }
 
@@ -127,7 +200,7 @@ static int executarComando(const std::string& cmd, int argc, char* argv[],
             std::fprintf(stderr, "falha na transferencia de controle\n");
             return 1;
         }
-        if (!enviar) imprimirBytes(dados);
+        if (!enviar) { hexdump(dados.data(), dados.size()); }
         else std::printf("ok\n");
         return 0;
     }
@@ -141,7 +214,7 @@ static int executarComando(const std::string& cmd, int argc, char* argv[],
             std::fprintf(stderr, "falha na transferencia bulk\n");
             return 1;
         }
-        if (!enviar) imprimirBytes(dados);
+        if (!enviar) { hexdump(dados.data(), dados.size()); }
         else std::printf("ok\n");
         return 0;
     }
@@ -187,14 +260,14 @@ static int executarComando(const std::string& cmd, int argc, char* argv[],
             std::fprintf(stderr, "falha na leitura de setor\n");
             return 1;
         }
-        imprimirBytes(buf);
+        hexdump(buf.data(), buf.size());
         return 0;
     }
 
     if (cmd == "escrever-setor") {
         // ! operacao irreversivel, sobrescreve dados no dispositivo
         if (argc < 5) { exibirAjuda(argv[0]); return 1; }
-        uint64_t lba   = std::strtoull(argv[3], nullptr, 10);
+        uint64_t lba  = std::strtoull(argv[3], nullptr, 10);
         auto dados = hexParaBytes(argv[4]);
         if (dados.empty() || dados.size() % 512 != 0) {
             std::fprintf(stderr, "dados devem ser multiplo de 512 bytes\n");
@@ -234,6 +307,15 @@ int main(int argc, char* argv[]) {
         return 0;
     }
 
+    // * monitorar nao precisa de indice de dispositivo
+    if (cmd == "monitorar") {
+        int      bus  = argc > 2 ? static_cast<int>(std::strtol(argv[2], nullptr, 10)) : -1;
+        uint8_t  addr = argc > 3 ? static_cast<uint8_t>(std::strtoul(argv[3], nullptr, 10)) : 0;
+        uint32_t maxP = argc > 4 ? static_cast<uint32_t>(std::strtoul(argv[4], nullptr, 10)) : 0;
+        monitorar(bus, addr, maxP);
+        return 0;
+    }
+
     if (argc < 3) { exibirAjuda(argv[0]); return 1; }
 
     auto devs = enumerarDispositivos();
@@ -256,7 +338,7 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    int ret = executarComando(cmd, argc, argv, handle);
+    int ret = executarComando(cmd, argc, argv, handle, idx);
     fecharDispositivo(handle);
     return ret;
 }

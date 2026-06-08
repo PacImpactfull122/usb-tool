@@ -56,3 +56,18 @@ void liberarInterface(intptr_t handle, uint32_t iface);
 
 // * desconectar driver do kernel antes de reivindicar interface
 bool desconectarDriver(intptr_t handle, uint32_t iface);
+
+// retorna o blob completo do configuration descriptor (inclui interface + endpoint)
+[[nodiscard]] std::vector<uint8_t> lerConfiguracaoCompleta(intptr_t handle);
+
+// retorna o blob do hid report descriptor da primeira interface hid encontrada
+[[nodiscard]] std::vector<uint8_t> lerRelatorioHid(intptr_t handle);
+
+// leitura de todos os string descriptors disponiveis (indices 1..N)
+[[nodiscard]] std::vector<std::string> lerStrings(intptr_t handle);
+
+// captura trafego via usbmon (requer /dev/usbmonX e modulo carregado)
+// bus=-1 usa usbmon0 que captura todos os barramentos
+// addr=0 captura todos os dispositivos no barramento
+// maxPacotes=0 roda indefinidamente ate ctrl+c
+void monitorar(int bus, uint8_t addr, uint32_t maxPacotes);
