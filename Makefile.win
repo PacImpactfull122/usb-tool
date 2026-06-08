@@ -1,0 +1,11 @@
+CXX      = g++
+CXXFLAGS = -std=c++17 -O2 -Wall -Wextra
+TARGET   = usb-tool.exe
+SRCS     = main.cpp usb_windows.cpp
+LIBS     = -lsetupapi -lcfgmgr32
+
+$(TARGET): $(SRCS) usb.h
+	$(CXX) $(CXXFLAGS) $(SRCS) -o $(TARGET) $(LIBS)
+
+clean:
+	del $(TARGET)
