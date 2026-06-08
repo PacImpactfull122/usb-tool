@@ -4,10 +4,12 @@ Ferramenta de linha de comando em C++17 para interacao direta com hardware USB n
 
 ## Funcionalidades
 
-- Enumeracao de dispositivos USB conectados via sysfs (Linux) ou SetupAPI (Windows)
+- Enumeracao de dispositivos USB com classe, velocidade e protocolo via sysfs (Linux) ou SetupAPI (Windows)
+- Informacoes detalhadas de um dispositivo especifico
 - Reset de dispositivo via usbfs / IOCTL
-- Leitura de descritores USB (device, configuration, string, etc.)
-- Transferencias de controle e bulk raw
+- Leitura de descritores USB (device, configuration, string, HID report, etc.)
+- Transferencias de controle, bulk e interrupt raw
+- Leitura de HID reports em loop via endpoint interrupt (teclados, mouses, gamepads)
 - Leitura e escrita de setores raw via protocolo USB MSC BOT (Linux)
 - Leitura e escrita de setores raw via ReadFile/WriteFile OVERLAPPED (Windows)
 - Envio de DFU DETACH para modo bootloader
@@ -67,9 +69,31 @@ sudo ./usbctl listar
 Saida exemplo:
 ```
 [0] 0951:1666  Kingston DataTraveler  serial: 001234
+     classe: armazenamento em massa (08)  velocidade: 480 Mbit/s
      /sys/bus/usb/devices/1-1/
 [1] 046d:c52b  Logitech Unifying Receiver  serial: -
+     classe: hid (03)  velocidade: 12 Mbit/s
      /sys/bus/usb/devices/1-2/
+```
+
+### Informacoes detalhadas de um dispositivo
+
+```bash
+sudo ./usbctl info 0
+```
+
+Saida exemplo:
+```
+dispositivo [0]
+  vendor id  : 046d
+  product id : c52b
+  fabricante : Logitech
+  produto    : USB Receiver
+  serial     : -
+  classe     : hid (03/00/00)
+  velocidade : 12 Mbit/s
+  barramento : 1  endereco: 3
+  caminho    : /sys/bus/usb/devices/1-2/
 ```
 
 ### Resetar dispositivo
@@ -89,6 +113,39 @@ sudo ./usbctl descritor 0 02
 
 # descritor de string indice 1 (tipo 03)
 sudo ./usbctl descritor 0 03 01
+
+# HID report descriptor (tipo 22)
+sudo ./usbctl descritor 0 22
+```
+
+### Leitura de HID reports (teclado, mouse, gamepad)
+
+Leitura continua via endpoint interrupt. Mostra os bytes raw de cada report enviado pelo dispositivo.
+
+```bash
+# leitura do endpoint interrupt 0x81, buffer de 8 bytes (padrao hid teclado)
+sudo ./usbctl hid-ler 0 81
+
+# especificar tamanho do buffer e timeout em ms
+sudo ./usbctl hid-ler 0 81 8 3000
+
+# mouse (report de 4 bytes: botoes, dx, dy, scroll)
+sudo ./usbctl hid-ler 1 81 4
+```
+
+Saida exemplo ao pressionar tecla A em um teclado:
+```
+lendo hid reports do endpoint 81 (ctrl+c para parar)
+
+[   0] 00 00 04 00 00 00 00 00
+[   1] 00 00 00 00 00 00 00 00
+```
+
+Formato do report HID de teclado (8 bytes):
+```
+byte 0  modificadores (bit0=ctrl, bit1=shift, bit2=alt, bit3=meta)
+byte 1  reservado
+bytes 2-7  ate 6 keycodes simultaneos (0x04=a, 0x05=b, 0x28=enter...)
 ```
 
 ### Transferencia de controle
@@ -165,11 +222,14 @@ Endpoints assumidos: bulk OUT `0x01`, bulk IN `0x81`. Dispositivos com endpoints
 ## APIs utilizadas
 
 ### Linux
-- `/sys/bus/usb/devices/` - enumeracao via sysfs
+- `/sys/bus/usb/devices/` - enumeracao e metadados via sysfs
 - `/dev/bus/usb/BBB/DDD` - acesso direto via usbfs
 - `USBDEVFS_RESET` - reset de dispositivo
 - `USBDEVFS_CONTROL` - transferencias de controle e DFU DETACH
 - `USBDEVFS_BULK` - transferencias bulk e protocolo BOT
+- `USBDEVFS_INTERRUPT` - leitura de endpoints interrupt (HID)
+- `USBDEVFS_CLAIMINTERFACE` / `USBDEVFS_RELEASEINTERFACE` - controle exclusivo de interface
+- `USBDEVFS_DISCONNECT` - desconexao do driver do kernel
 
 ### Windows
 - `SetupDiGetClassDevs` / `SetupDiEnumDeviceInfo` - enumeracao
@@ -181,6 +241,7 @@ Endpoints assumidos: bulk OUT `0x01`, bulk IN `0x81`. Dispositivos com endpoints
 ## Limitacoes
 
 - Transferencias de controle e bulk no Windows requerem WinUSB ou driver de kernel customizado instalado para o dispositivo.
+- Leitura HID via `hid-ler` desconecta temporariamente o driver do kernel (usbhid). O dispositivo volta ao normal apos liberar a interface ou reiniciar.
 - Leitura e escrita de setor funcionam apenas em dispositivos de armazenamento em massa. No Windows, o dispositivo deve ser aberto como `\\.\PhysicalDriveN`.
 - Modo bootloader (DFU) funciona apenas se o firmware implementar USB DFU class (STM32, ATmega32u4, ESP32-S2, etc).
 - Os endpoints de bulk OUT (`0x01`) e bulk IN (`0x81`) sao assumidos como fixos. Dispositivos com configuracao diferente requerem ajuste.

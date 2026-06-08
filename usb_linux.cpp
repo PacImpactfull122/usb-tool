@@ -57,6 +57,13 @@ static int lerSysfsInt(const std::string& caminho) {
     catch (...) { return 0; }
 }
 
+static uint8_t lerSysfsHex8(const std::string& caminho) {
+    std::string val = lerSysfs(caminho);
+    if (val.empty()) return 0;
+    try { return static_cast<uint8_t>(std::stoul(val, nullptr, 16)); }
+    catch (...) { return 0; }
+}
+
 std::vector<DispositivoUsb> enumerarDispositivos() {
     std::vector<DispositivoUsb> lista;
     const std::string base = "/sys/bus/usb/devices/";
@@ -84,6 +91,11 @@ std::vector<DispositivoUsb> enumerarDispositivos() {
         dev.caminho    = no;
         dev.barramento = static_cast<uint8_t>(lerSysfsInt(no + "busnum"));
         dev.endereco   = static_cast<uint8_t>(lerSysfsInt(no + "devnum"));
+        dev.classe     = lerSysfsHex8(no + "bDeviceClass");
+        dev.subclasse  = lerSysfsHex8(no + "bDeviceSubClass");
+        dev.protocolo  = lerSysfsHex8(no + "bDeviceProtocol");
+        dev.versaoUsb  = static_cast<uint8_t>(lerSysfsInt(no + "bcdUSB"));
+        dev.velocidade = lerSysfs(no + "speed");
 
         lista.push_back(dev);
     }
@@ -152,6 +164,41 @@ bool transferirBulk(intptr_t handle, uint8_t endpoint,
     int ret = ioctl(static_cast<int>(handle), USBDEVFS_BULK, &bt);
     if (ret < 0) return false;
     if (!enviar) dados.resize(static_cast<size_t>(ret));
+    return true;
+}
+
+bool transferirInterrupt(intptr_t handle, uint8_t endpoint,
+                         std::vector<uint8_t>& dados, uint32_t timeout) {
+    struct usbdevfs_bulktransfer bt{};
+    // * usbdevfs_interrupttransfer tem a mesma estrutura que bulktransfer
+    bt.ep      = endpoint;
+    bt.len     = static_cast<uint32_t>(dados.size());
+    bt.timeout = timeout;
+    bt.data    = dados.data();
+    // * kernels recentes removeram usbdevfs_interrupt, bulk no endpoint interrupt funciona igual
+    int ret = ioctl(static_cast<int>(handle), USBDEVFS_BULK, &bt);
+    if (ret < 0) return false;
+    dados.resize(static_cast<size_t>(ret));
+    return true;
+}
+
+bool reivindicarInterface(intptr_t handle, uint32_t iface) {
+    unsigned int n = iface;
+    return ioctl(static_cast<int>(handle), USBDEVFS_CLAIMINTERFACE, &n) == 0;
+}
+
+void liberarInterface(intptr_t handle, uint32_t iface) {
+    unsigned int n = iface;
+    ioctl(static_cast<int>(handle), USBDEVFS_RELEASEINTERFACE, &n);
+}
+
+bool desconectarDriver(intptr_t handle, uint32_t iface) {
+    struct usbdevfs_ioctl cmd{};
+    cmd.ifno    = static_cast<int>(iface);
+    cmd.ioctl_code = USBDEVFS_DISCONNECT;
+    cmd.data    = nullptr;
+    // * retorno negativo pode indicar que nao havia driver, nao e erro fatal
+    ioctl(static_cast<int>(handle), USBDEVFS_IOCTL, &cmd);
     return true;
 }
 

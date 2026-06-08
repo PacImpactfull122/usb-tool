@@ -2,8 +2,13 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <csignal>
 #include <string>
 #include <vector>
+
+static volatile bool rodando = true;
+
+static void tratarSinal(int) { rodando = false; }
 
 static void exibirAjuda(const char* prog) {
     std::printf(
@@ -11,10 +16,12 @@ static void exibirAjuda(const char* prog) {
         "\n"
         "comandos:\n"
         "  listar\n"
+        "  info           <indice>\n"
         "  resetar        <indice>\n"
         "  descritor      <indice> <tipo_hex> [indice_hex]\n"
         "  controle       <indice> <bmRT> <bReq> <wVal> <wIdx> <hex_dados> <r|w>\n"
         "  bulk           <indice> <endpoint> <hex_dados> <r|w>\n"
+        "  hid-ler        <indice> <endpoint> [tam_buf] [timeout_ms]\n"
         "  ler-setor      <indice> <lba> <qtd>\n"
         "  escrever-setor <indice> <lba> <hex_dados>\n"
         "  bootloader     <indice>\n",
@@ -39,12 +46,53 @@ static void imprimirBytes(const std::vector<uint8_t>& dados) {
     std::putchar('\n');
 }
 
+static const char* nomeclasse(uint8_t cls) {
+    switch (cls) {
+        case 0x00: return "definida por interface";
+        case 0x02: return "comunicacao";
+        case 0x03: return "hid";
+        case 0x05: return "fisico";
+        case 0x06: return "imagem";
+        case 0x07: return "impressora";
+        case 0x08: return "armazenamento em massa";
+        case 0x09: return "hub";
+        case 0x0a: return "cdc dados";
+        case 0x0b: return "cartao inteligente";
+        case 0x0d: return "seguranca de conteudo";
+        case 0x0e: return "video";
+        case 0x0f: return "saude pessoal";
+        case 0x10: return "audio video";
+        case 0xe0: return "controlador wireless";
+        case 0xfe: return "especifico de aplicacao";
+        case 0xff: return "especifico de fabricante";
+        default:   return "desconhecida";
+    }
+}
+
 static void imprimirDispositivo(int idx, const DispositivoUsb& dev) {
     std::printf("[%d] %04x:%04x  %s %s  serial: %s\n",
                 idx, dev.idVendor, dev.idProduct,
                 dev.fabricante.c_str(), dev.produto.c_str(),
                 dev.serial.empty() ? "-" : dev.serial.c_str());
+    std::printf("     classe: %s (%02x)  velocidade: %s Mbit/s\n",
+                nomeclasse(dev.classe), dev.classe,
+                dev.velocidade.empty() ? "?" : dev.velocidade.c_str());
     std::printf("     %s\n", dev.caminho.c_str());
+}
+
+static void imprimirInfo(int idx, const DispositivoUsb& dev) {
+    std::printf("dispositivo [%d]\n", idx);
+    std::printf("  vendor id  : %04x\n", dev.idVendor);
+    std::printf("  product id : %04x\n", dev.idProduct);
+    std::printf("  fabricante : %s\n", dev.fabricante.empty() ? "-" : dev.fabricante.c_str());
+    std::printf("  produto    : %s\n", dev.produto.empty() ? "-" : dev.produto.c_str());
+    std::printf("  serial     : %s\n", dev.serial.empty() ? "-" : dev.serial.c_str());
+    std::printf("  classe     : %s (%02x/%02x/%02x)\n",
+                nomeclasse(dev.classe), dev.classe, dev.subclasse, dev.protocolo);
+    std::printf("  velocidade : %s Mbit/s\n",
+                dev.velocidade.empty() ? "?" : dev.velocidade.c_str());
+    std::printf("  barramento : %d  endereco: %d\n", dev.barramento, dev.endereco);
+    std::printf("  caminho    : %s\n", dev.caminho.c_str());
 }
 
 static int executarComando(const std::string& cmd, int argc, char* argv[],
@@ -95,6 +143,38 @@ static int executarComando(const std::string& cmd, int argc, char* argv[],
         }
         if (!enviar) imprimirBytes(dados);
         else std::printf("ok\n");
+        return 0;
+    }
+
+    if (cmd == "hid-ler") {
+        if (argc < 4) { exibirAjuda(argv[0]); return 1; }
+        uint8_t  ep      = static_cast<uint8_t> (std::strtoul(argv[3], nullptr, 16));
+        uint32_t tam     = argc > 4 ? static_cast<uint32_t>(std::strtoul(argv[4], nullptr, 10)) : 8;
+        uint32_t timeout = argc > 5 ? static_cast<uint32_t>(std::strtoul(argv[5], nullptr, 10)) : 5000;
+
+        // * desconecta hid do kernel para liberar acesso via usbfs
+        desconectarDriver(handle, 0);
+        if (!reivindicarInterface(handle, 0)) {
+            std::fprintf(stderr, "falha ao reivindicar interface (dispositivo em uso?)\n");
+            return 1;
+        }
+
+        std::signal(SIGINT, tratarSinal);
+        std::printf("lendo hid reports do endpoint %02x (ctrl+c para parar)\n\n", ep);
+
+        uint64_t pacote = 0;
+        while (rodando) {
+            std::vector<uint8_t> buf(tam, 0);
+            if (!transferirInterrupt(handle, ep, buf, timeout)) {
+                if (!rodando) break;
+                std::fprintf(stderr, "timeout ou erro na leitura\n");
+                continue;
+            }
+            std::printf("[%4llu] ", static_cast<unsigned long long>(pacote++));
+            imprimirBytes(buf);
+        }
+
+        liberarInterface(handle, 0);
         return 0;
     }
 
@@ -164,6 +244,11 @@ int main(int argc, char* argv[]) {
         return 1;
     }
     int idx = static_cast<int>(idxLong);
+
+    if (cmd == "info") {
+        imprimirInfo(idx, devs[idx]);
+        return 0;
+    }
 
     intptr_t handle = abrirDispositivo(devs[idx]);
     if (handle < 0) {
