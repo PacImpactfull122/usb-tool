@@ -48,19 +48,19 @@ std::vector<DispositivoUsb> enumerarDispositivos() {
 
         wchar_t hwId[512]{};
         if (SetupDiGetDeviceRegistryPropertyW(hDevInfo, &devInfoData,
-                SPDRP_HARDWAREID, nullptr, (PBYTE)hwId, sizeof(hwId), nullptr)) {
+                SPDRP_HARDWAREID, nullptr, reinterpret_cast<PBYTE>(hwId), sizeof(hwId), nullptr)) {
             std::wstring hw(hwId);
             auto posVid = hw.find(L"VID_");
             auto posPid = hw.find(L"PID_");
             if (posVid != std::wstring::npos)
-                dev.idVendor  = (uint16_t)std::stoul(hw.substr(posVid + 4, 4), nullptr, 16);
+                dev.idVendor  = static_cast<uint16_t>(std::stoul(hw.substr(posVid + 4, 4), nullptr, 16));
             if (posPid != std::wstring::npos)
-                dev.idProduct = (uint16_t)std::stoul(hw.substr(posPid + 4, 4), nullptr, 16);
+                dev.idProduct = static_cast<uint16_t>(std::stoul(hw.substr(posPid + 4, 4), nullptr, 16));
         }
 
         wchar_t desc[256]{};
         if (SetupDiGetDeviceRegistryPropertyW(hDevInfo, &devInfoData,
-                SPDRP_DEVICEDESC, nullptr, (PBYTE)desc, sizeof(desc), nullptr))
+                SPDRP_DEVICEDESC, nullptr, reinterpret_cast<PBYTE>(desc), sizeof(desc), nullptr))
             dev.produto = wstrParaStr(desc);
 
         SP_DEVICE_INTERFACE_DATA ifData{};
@@ -70,7 +70,7 @@ std::vector<DispositivoUsb> enumerarDispositivos() {
             DWORD tamReq = 0;
             SetupDiGetDeviceInterfaceDetailW(hDevInfo, &ifData, nullptr, 0, &tamReq, nullptr);
             std::vector<BYTE> buf(tamReq);
-            auto* detail = (SP_DEVICE_INTERFACE_DETAIL_DATA_W*)buf.data();
+            auto* detail = reinterpret_cast<SP_DEVICE_INTERFACE_DETAIL_DATA_W*>(buf.data());
             detail->cbSize = sizeof(SP_DEVICE_INTERFACE_DETAIL_DATA_W);
             if (SetupDiGetDeviceInterfaceDetailW(hDevInfo, &ifData,
                     detail, tamReq, nullptr, nullptr))
@@ -93,19 +93,19 @@ intptr_t abrirDispositivo(const DispositivoUsb& dev) {
         h = CreateFileW(ws.c_str(), GENERIC_READ,
                         FILE_SHARE_READ | FILE_SHARE_WRITE,
                         nullptr, OPEN_EXISTING, 0, nullptr);
-    if (h == INVALID_HANDLE_VALUE) return (intptr_t)-1;
-    return (intptr_t)h;
+    if (h == INVALID_HANDLE_VALUE) return intptr_t{-1};
+    return reinterpret_cast<intptr_t>(h);
 }
 
 void fecharDispositivo(intptr_t handle) {
     if (handle < 0) return;
-    HANDLE h = (HANDLE)handle;
+    HANDLE h = reinterpret_cast<HANDLE>(handle);
     if (h != INVALID_HANDLE_VALUE) CloseHandle(h);
 }
 
 bool resetarDispositivo(intptr_t handle) {
     DWORD bytes = 0;
-    return DeviceIoControl((HANDLE)handle, IOCTL_USB_RESET_PORT,
+    return DeviceIoControl(reinterpret_cast<HANDLE>(handle), IOCTL_USB_RESET_PORT,
                            nullptr, 0, nullptr, 0, &bytes, nullptr) != 0;
 }
 
@@ -118,57 +118,55 @@ std::vector<uint8_t> lerDescritor(intptr_t handle, uint8_t tipo, uint8_t indice)
     buf.req.ConnectionIndex       = 0;
     buf.req.SetupPacket.bmRequest = 0x80;
     buf.req.SetupPacket.bRequest  = 0x06;
-    buf.req.SetupPacket.wValue    = (uint16_t)((tipo << 8) | indice);
+    buf.req.SetupPacket.wValue    = static_cast<uint16_t>((tipo << 8) | indice);
     buf.req.SetupPacket.wIndex    = 0;
     buf.req.SetupPacket.wLength   = 255;
 
     DWORD retornado = 0;
-    if (!DeviceIoControl((HANDLE)handle,
+    if (!DeviceIoControl(reinterpret_cast<HANDLE>(handle),
                          IOCTL_USB_GET_DESCRIPTOR_FROM_NODE_CONNECTION,
                          &buf, sizeof(buf), &buf, sizeof(buf), &retornado, nullptr))
         return {};
 
     uint32_t tam = retornado > sizeof(USB_DESCRIPTOR_REQUEST)
-                   ? retornado - (uint32_t)sizeof(USB_DESCRIPTOR_REQUEST) : 0;
+                   ? retornado - static_cast<uint32_t>(sizeof(USB_DESCRIPTOR_REQUEST)) : 0;
     return std::vector<uint8_t>(buf.dados, buf.dados + tam);
 }
 
-bool transferirControle(intptr_t handle,
-                        uint8_t bmRequestType, uint8_t bRequest,
-                        uint16_t wValue, uint16_t wIndex,
-                        std::vector<uint8_t>& dados, bool enviar) {
+bool transferirControle(intptr_t /*handle*/,
+                        uint8_t /*bmRequestType*/, uint8_t /*bRequest*/,
+                        uint16_t /*wValue*/, uint16_t /*wIndex*/,
+                        std::vector<uint8_t>& /*dados*/, bool /*enviar*/) {
     // ! requer winusb ou driver de kernel customizado instalado para o dispositivo
-    (void)handle; (void)bmRequestType; (void)bRequest;
-    (void)wValue; (void)wIndex; (void)dados; (void)enviar;
     std::fprintf(stderr, "transferencia de controle requer winusb instalado para o dispositivo\n");
     return false;
 }
 
-bool transferirBulk(intptr_t handle, uint8_t endpoint,
-                    std::vector<uint8_t>& dados, bool enviar) {
+bool transferirBulk(intptr_t /*handle*/, uint8_t /*endpoint*/,
+                    std::vector<uint8_t>& /*dados*/, bool /*enviar*/) {
     // ! requer winusb ou driver de kernel customizado instalado para o dispositivo
-    (void)handle; (void)endpoint; (void)dados; (void)enviar;
     std::fprintf(stderr, "transferencia bulk requer winusb instalado para o dispositivo\n");
     return false;
 }
 
 bool lerSetor(intptr_t handle, uint64_t lba, uint32_t qtd, std::vector<uint8_t>& buf) {
-    const uint32_t tamSetor = 512;
-    buf.resize((size_t)(qtd * tamSetor));
+    static constexpr uint32_t tamSetor = 512;
+    buf.resize(static_cast<size_t>(qtd * tamSetor));
 
     LARGE_INTEGER offset;
-    offset.QuadPart = (LONGLONG)(lba * tamSetor);
+    offset.QuadPart = static_cast<LONGLONG>(lba * tamSetor);
 
     OVERLAPPED ov{};
     ov.Offset     = offset.LowPart;
-    ov.OffsetHigh = (DWORD)offset.HighPart;
+    ov.OffsetHigh = static_cast<DWORD>(offset.HighPart);
     ov.hEvent     = CreateEvent(nullptr, TRUE, FALSE, nullptr);
     if (!ov.hEvent) return false;
 
     DWORD lido = 0;
-    BOOL ok = ReadFile((HANDLE)handle, buf.data(), (DWORD)buf.size(), &lido, &ov);
+    BOOL ok = ReadFile(reinterpret_cast<HANDLE>(handle), buf.data(),
+                       static_cast<DWORD>(buf.size()), &lido, &ov);
     if (!ok && GetLastError() == ERROR_IO_PENDING)
-        ok = GetOverlappedResult((HANDLE)handle, &ov, &lido, TRUE);
+        ok = GetOverlappedResult(reinterpret_cast<HANDLE>(handle), &ov, &lido, TRUE);
 
     CloseHandle(ov.hEvent);
     if (!ok) return false;
@@ -178,29 +176,30 @@ bool lerSetor(intptr_t handle, uint64_t lba, uint32_t qtd, std::vector<uint8_t>&
 
 bool escreverSetor(intptr_t handle, uint64_t lba, uint32_t qtd,
                    const std::vector<uint8_t>& dados) {
-    (void)qtd;
-    const uint32_t tamSetor = 512;
+    static constexpr uint32_t tamSetor = 512;
+    if (dados.size() != static_cast<size_t>(qtd) * tamSetor) return false;
+
     LARGE_INTEGER offset;
-    offset.QuadPart = (LONGLONG)(lba * tamSetor);
+    offset.QuadPart = static_cast<LONGLONG>(lba * tamSetor);
 
     OVERLAPPED ov{};
     ov.Offset     = offset.LowPart;
-    ov.OffsetHigh = (DWORD)offset.HighPart;
+    ov.OffsetHigh = static_cast<DWORD>(offset.HighPart);
     ov.hEvent     = CreateEvent(nullptr, TRUE, FALSE, nullptr);
     if (!ov.hEvent) return false;
 
     DWORD escrito = 0;
-    BOOL ok = WriteFile((HANDLE)handle, dados.data(), (DWORD)dados.size(), &escrito, &ov);
+    BOOL ok = WriteFile(reinterpret_cast<HANDLE>(handle), dados.data(),
+                        static_cast<DWORD>(dados.size()), &escrito, &ov);
     if (!ok && GetLastError() == ERROR_IO_PENDING)
-        ok = GetOverlappedResult((HANDLE)handle, &ov, &escrito, TRUE);
+        ok = GetOverlappedResult(reinterpret_cast<HANDLE>(handle), &ov, &escrito, TRUE);
 
     CloseHandle(ov.hEvent);
     return ok != 0;
 }
 
-bool entrarModoBootloader(intptr_t handle) {
+bool entrarModoBootloader(intptr_t /*handle*/) {
     // ! requer winusb ou driver dfu instalado para o dispositivo
-    (void)handle;
     std::fprintf(stderr, "modo bootloader requer winusb ou driver dfu instalado\n");
     return false;
 }

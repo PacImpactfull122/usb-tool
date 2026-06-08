@@ -10,9 +10,8 @@
 #include <fstream>
 #include <cstring>
 #include <cstdio>
-#include <cerrno>
 
-static const uint32_t TAM_SETOR = 512;
+static constexpr uint32_t TAM_SETOR = 512;
 
 // * estruturas do protocolo BOT definidas localmente para evitar dependencia de cabecalhos externos
 struct __attribute__((packed)) CBW {
@@ -47,7 +46,7 @@ static std::string lerSysfs(const std::string& caminho) {
 
 static uint16_t hexParaU16(const std::string& s) {
     if (s.empty()) return 0;
-    try { return (uint16_t)std::stoul(s, nullptr, 16); }
+    try { return static_cast<uint16_t>(std::stoul(s, nullptr, 16)); }
     catch (...) { return 0; }
 }
 
@@ -83,8 +82,8 @@ std::vector<DispositivoUsb> enumerarDispositivos() {
         dev.produto    = lerSysfs(no + "product");
         dev.serial     = lerSysfs(no + "serial");
         dev.caminho    = no;
-        dev.barramento = (uint8_t)lerSysfsInt(no + "busnum");
-        dev.endereco   = (uint8_t)lerSysfsInt(no + "devnum");
+        dev.barramento = static_cast<uint8_t>(lerSysfsInt(no + "busnum"));
+        dev.endereco   = static_cast<uint8_t>(lerSysfsInt(no + "devnum"));
 
         lista.push_back(dev);
     }
@@ -102,11 +101,11 @@ intptr_t abrirDispositivo(const DispositivoUsb& dev) {
 }
 
 void fecharDispositivo(intptr_t handle) {
-    if (handle >= 0) close((int)handle);
+    if (handle >= 0) close(static_cast<int>(handle));
 }
 
 bool resetarDispositivo(intptr_t handle) {
-    return ioctl((int)handle, USBDEVFS_RESET, nullptr) == 0;
+    return ioctl(static_cast<int>(handle), USBDEVFS_RESET, nullptr) == 0;
 }
 
 std::vector<uint8_t> lerDescritor(intptr_t handle, uint8_t tipo, uint8_t indice) {
@@ -114,14 +113,14 @@ std::vector<uint8_t> lerDescritor(intptr_t handle, uint8_t tipo, uint8_t indice)
     struct usbdevfs_ctrltransfer ct{};
     ct.bRequestType = USB_DIR_IN | USB_TYPE_STANDARD | USB_RECIP_DEVICE;
     ct.bRequest     = USB_REQ_GET_DESCRIPTOR;
-    ct.wValue       = (uint16_t)((tipo << 8) | indice);
+    ct.wValue       = static_cast<uint16_t>((tipo << 8) | indice);
     ct.wIndex       = 0;
-    ct.wLength      = (uint16_t)buf.size();
+    ct.wLength      = static_cast<uint16_t>(buf.size());
     ct.timeout      = 1000;
     ct.data         = buf.data();
-    int ret = ioctl((int)handle, USBDEVFS_CONTROL, &ct);
+    int ret = ioctl(static_cast<int>(handle), USBDEVFS_CONTROL, &ct);
     if (ret < 0) return {};
-    buf.resize((size_t)ret);
+    buf.resize(static_cast<size_t>(ret));
     return buf;
 }
 
@@ -134,12 +133,12 @@ bool transferirControle(intptr_t handle,
     ct.bRequest     = bRequest;
     ct.wValue       = wValue;
     ct.wIndex       = wIndex;
-    ct.wLength      = (uint16_t)dados.size();
+    ct.wLength      = static_cast<uint16_t>(dados.size());
     ct.timeout      = 2000;
     ct.data         = dados.empty() ? nullptr : dados.data();
-    int ret = ioctl((int)handle, USBDEVFS_CONTROL, &ct);
+    int ret = ioctl(static_cast<int>(handle), USBDEVFS_CONTROL, &ct);
     if (ret < 0) return false;
-    if (!enviar) dados.resize((size_t)ret);
+    if (!enviar) dados.resize(static_cast<size_t>(ret));
     return true;
 }
 
@@ -147,33 +146,33 @@ bool transferirBulk(intptr_t handle, uint8_t endpoint,
                     std::vector<uint8_t>& dados, bool enviar) {
     struct usbdevfs_bulktransfer bt{};
     bt.ep      = endpoint;
-    bt.len     = (uint32_t)dados.size();
+    bt.len     = static_cast<uint32_t>(dados.size());
     bt.timeout = 2000;
     bt.data    = dados.data();
-    int ret = ioctl((int)handle, USBDEVFS_BULK, &bt);
+    int ret = ioctl(static_cast<int>(handle), USBDEVFS_BULK, &bt);
     if (ret < 0) return false;
-    if (!enviar) dados.resize((size_t)ret);
+    if (!enviar) dados.resize(static_cast<size_t>(ret));
     return true;
 }
 
 // * protocolo BOT: envia cbw via bulk out, transfere dados, valida csw via bulk in
 static bool botExec(int fd, uint8_t epOut, uint8_t epIn,
                     const uint8_t* cdb, uint8_t tamCDB,
-                    void* dados, uint32_t tamDados, bool leitura) {
+                    uint8_t* dados, uint32_t tamDados, bool leitura) {
     static uint32_t tagSeq = 1;
 
     CBW cbw{};
-    cbw.assinatura          = CBW_ASSINATURA;
-    cbw.tag                 = tagSeq++;
+    cbw.assinatura           = CBW_ASSINATURA;
+    cbw.tag                  = tagSeq++;
     cbw.tamanhoTransferencia = tamDados;
-    cbw.flags               = leitura ? CBW_FLAG_IN : CBW_FLAG_OUT;
-    cbw.lun                 = 0;
-    cbw.tamCDB              = tamCDB;
+    cbw.flags                = leitura ? CBW_FLAG_IN : CBW_FLAG_OUT;
+    cbw.lun                  = 0;
+    cbw.tamCDB               = tamCDB;
     std::memcpy(cbw.cdb, cdb, tamCDB);
 
     struct usbdevfs_bulktransfer bt{};
     bt.ep      = epOut;
-    bt.len     = sizeof(CBW);
+    bt.len     = static_cast<uint32_t>(sizeof(CBW));
     bt.timeout = 5000;
     bt.data    = &cbw;
     if (ioctl(fd, USBDEVFS_BULK, &bt) < 0) return false;
@@ -188,7 +187,7 @@ static bool botExec(int fd, uint8_t epOut, uint8_t epIn,
 
     CSW csw{};
     bt.ep      = epIn;
-    bt.len     = sizeof(CSW);
+    bt.len     = static_cast<uint32_t>(sizeof(CSW));
     bt.timeout = 5000;
     bt.data    = &csw;
     if (ioctl(fd, USBDEVFS_BULK, &bt) < 0) return false;
@@ -197,34 +196,35 @@ static bool botExec(int fd, uint8_t epOut, uint8_t epIn,
 }
 
 bool lerSetor(intptr_t handle, uint64_t lba, uint32_t qtd, std::vector<uint8_t>& buf) {
-    buf.assign((size_t)(qtd * TAM_SETOR), 0);
+    buf.assign(static_cast<size_t>(qtd * TAM_SETOR), 0);
 
     uint8_t cdb[10] = {
         0x28, 0x00,
-        (uint8_t)(lba >> 24), (uint8_t)(lba >> 16),
-        (uint8_t)(lba >> 8),  (uint8_t)(lba),
+        static_cast<uint8_t>(lba >> 24), static_cast<uint8_t>(lba >> 16),
+        static_cast<uint8_t>(lba >> 8),  static_cast<uint8_t>(lba),
         0x00,
-        (uint8_t)(qtd >> 8),  (uint8_t)(qtd),
+        static_cast<uint8_t>(qtd >> 8),  static_cast<uint8_t>(qtd),
         0x00
     };
 
-    return botExec((int)handle, 0x01, 0x81, cdb, sizeof(cdb),
-                   buf.data(), (uint32_t)buf.size(), true);
+    return botExec(static_cast<int>(handle), 0x01, 0x81, cdb, sizeof(cdb),
+                   buf.data(), static_cast<uint32_t>(buf.size()), true);
 }
 
 bool escreverSetor(intptr_t handle, uint64_t lba, uint32_t qtd,
                    const std::vector<uint8_t>& dados) {
     uint8_t cdb[10] = {
         0x2a, 0x00,
-        (uint8_t)(lba >> 24), (uint8_t)(lba >> 16),
-        (uint8_t)(lba >> 8),  (uint8_t)(lba),
+        static_cast<uint8_t>(lba >> 24), static_cast<uint8_t>(lba >> 16),
+        static_cast<uint8_t>(lba >> 8),  static_cast<uint8_t>(lba),
         0x00,
-        (uint8_t)(qtd >> 8),  (uint8_t)(qtd),
+        static_cast<uint8_t>(qtd >> 8),  static_cast<uint8_t>(qtd),
         0x00
     };
 
-    return botExec((int)handle, 0x01, 0x81, cdb, sizeof(cdb),
-                   const_cast<uint8_t*>(dados.data()), (uint32_t)dados.size(), false);
+    // * botExec recebe uint8_t* nao-const pois o ioctl exige, mas escrita nao modifica o buffer
+    return botExec(static_cast<int>(handle), 0x01, 0x81, cdb, sizeof(cdb),
+                   const_cast<uint8_t*>(dados.data()), static_cast<uint32_t>(dados.size()), false);
 }
 
 bool entrarModoBootloader(intptr_t handle) {
@@ -237,7 +237,7 @@ bool entrarModoBootloader(intptr_t handle) {
     ct.wLength      = 0;
     ct.timeout      = 2000;
     ct.data         = nullptr;
-    return ioctl((int)handle, USBDEVFS_CONTROL, &ct) >= 0;
+    return ioctl(static_cast<int>(handle), USBDEVFS_CONTROL, &ct) >= 0;
 }
 
 #endif // __linux__

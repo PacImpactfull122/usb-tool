@@ -26,7 +26,7 @@ static std::vector<uint8_t> hexParaBytes(const char* hex) {
     size_t len = std::strlen(hex);
     for (size_t i = 0; i + 1 < len; i += 2) {
         char buf[3] = { hex[i], hex[i + 1], '\0' };
-        bytes.push_back((uint8_t)std::strtoul(buf, nullptr, 16));
+        bytes.push_back(static_cast<uint8_t>(std::strtoul(buf, nullptr, 16)));
     }
     return bytes;
 }
@@ -59,8 +59,8 @@ static int executarComando(const std::string& cmd, int argc, char* argv[],
     }
 
     if (cmd == "descritor") {
-        uint8_t tipo = argc > 3 ? (uint8_t)std::strtoul(argv[3], nullptr, 16) : 0x01;
-        uint8_t ind  = argc > 4 ? (uint8_t)std::strtoul(argv[4], nullptr, 16) : 0x00;
+        uint8_t tipo = argc > 3 ? static_cast<uint8_t>(std::strtoul(argv[3], nullptr, 16)) : 0x01;
+        uint8_t ind  = argc > 4 ? static_cast<uint8_t>(std::strtoul(argv[4], nullptr, 16)) : 0x00;
         auto dados = lerDescritor(handle, tipo, ind);
         if (dados.empty()) { std::fprintf(stderr, "falha ao ler descritor\n"); return 1; }
         imprimirBytes(dados);
@@ -69,10 +69,10 @@ static int executarComando(const std::string& cmd, int argc, char* argv[],
 
     if (cmd == "controle") {
         if (argc < 9) { exibirAjuda(argv[0]); return 1; }
-        uint8_t  bmRT   = (uint8_t) std::strtoul(argv[3], nullptr, 16);
-        uint8_t  bReq   = (uint8_t) std::strtoul(argv[4], nullptr, 16);
-        uint16_t wVal   = (uint16_t)std::strtoul(argv[5], nullptr, 16);
-        uint16_t wIdx   = (uint16_t)std::strtoul(argv[6], nullptr, 16);
+        uint8_t  bmRT   = static_cast<uint8_t> (std::strtoul(argv[3], nullptr, 16));
+        uint8_t  bReq   = static_cast<uint8_t> (std::strtoul(argv[4], nullptr, 16));
+        uint16_t wVal   = static_cast<uint16_t>(std::strtoul(argv[5], nullptr, 16));
+        uint16_t wIdx   = static_cast<uint16_t>(std::strtoul(argv[6], nullptr, 16));
         bool     enviar = (argv[8][0] == 'w');
         auto dados = hexParaBytes(argv[7]);
         if (!transferirControle(handle, bmRT, bReq, wVal, wIdx, dados, enviar)) {
@@ -86,7 +86,7 @@ static int executarComando(const std::string& cmd, int argc, char* argv[],
 
     if (cmd == "bulk") {
         if (argc < 6) { exibirAjuda(argv[0]); return 1; }
-        uint8_t ep     = (uint8_t)std::strtoul(argv[3], nullptr, 16);
+        uint8_t ep     = static_cast<uint8_t>(std::strtoul(argv[3], nullptr, 16));
         bool    enviar = (argv[5][0] == 'w');
         auto dados = hexParaBytes(argv[4]);
         if (!transferirBulk(handle, ep, dados, enviar)) {
@@ -101,7 +101,7 @@ static int executarComando(const std::string& cmd, int argc, char* argv[],
     if (cmd == "ler-setor") {
         if (argc < 5) { exibirAjuda(argv[0]); return 1; }
         uint64_t lba = std::strtoull(argv[3], nullptr, 10);
-        uint32_t qtd = (uint32_t)std::strtoul(argv[4], nullptr, 10);
+        uint32_t qtd = static_cast<uint32_t>(std::strtoul(argv[4], nullptr, 10));
         std::vector<uint8_t> buf;
         if (!lerSetor(handle, lba, qtd, buf)) {
             std::fprintf(stderr, "falha na leitura de setor\n");
@@ -120,7 +120,7 @@ static int executarComando(const std::string& cmd, int argc, char* argv[],
             std::fprintf(stderr, "dados devem ser multiplo de 512 bytes\n");
             return 1;
         }
-        uint32_t qtd = (uint32_t)(dados.size() / 512);
+        uint32_t qtd = static_cast<uint32_t>(dados.size() / 512);
         if (!escreverSetor(handle, lba, qtd, dados)) {
             std::fprintf(stderr, "falha na escrita de setor\n");
             return 1;
@@ -150,18 +150,20 @@ int main(int argc, char* argv[]) {
     if (cmd == "listar") {
         auto devs = enumerarDispositivos();
         if (devs.empty()) { std::printf("nenhum dispositivo encontrado\n"); return 0; }
-        for (int i = 0; i < (int)devs.size(); ++i) imprimirDispositivo(i, devs[i]);
+        for (int i = 0; i < static_cast<int>(devs.size()); ++i) imprimirDispositivo(i, devs[i]);
         return 0;
     }
 
     if (argc < 3) { exibirAjuda(argv[0]); return 1; }
 
     auto devs = enumerarDispositivos();
-    int idx = std::atoi(argv[2]);
-    if (idx < 0 || idx >= (int)devs.size()) {
-        std::fprintf(stderr, "indice invalido: %d\n", idx);
+    char* endptr = nullptr;
+    long idxLong = std::strtol(argv[2], &endptr, 10);
+    if (endptr == argv[2] || *endptr != '\0' || idxLong < 0 || idxLong >= static_cast<long>(devs.size())) {
+        std::fprintf(stderr, "indice invalido: %s\n", argv[2]);
         return 1;
     }
+    int idx = static_cast<int>(idxLong);
 
     intptr_t handle = abrirDispositivo(devs[idx]);
     if (handle < 0) {
