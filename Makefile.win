@@ -1,11 +1,18 @@
 CXX      = g++
-CXXFLAGS = -std=c++17 -O2 -Wall -Wextra
-TARGET   = usb-tool.exe
+CXXFLAGS = -std=c++17 -O2 -Wall -Wextra -Wpedantic
+TARGET   = usbctl.exe
 SRCS     = main.cpp usb_windows.cpp
 LIBS     = -lsetupapi -lcfgmgr32
+
+.PHONY: all debug clean
+
+all: $(TARGET)
 
 $(TARGET): $(SRCS) usb.h
 	$(CXX) $(CXXFLAGS) $(SRCS) -o $(TARGET) $(LIBS)
 
+debug: CXXFLAGS = -std=c++17 -O0 -g -Wall -Wextra
+debug: $(TARGET)
+
 clean:
-	del $(TARGET)
+	del /f $(TARGET)

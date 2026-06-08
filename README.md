@@ -1,27 +1,28 @@
-# usb-tool
+# usbctl
 
-Ferramenta de linha de comando em C++ puro para interacao direta com hardware USB no Linux e Windows, sem dependencias de terceiros.
+Ferramenta de linha de comando em C++17 para interacao direta com hardware USB no Linux e Windows, sem dependencias de terceiros.
 
 ## Funcionalidades
 
-- Enumeracao de todos os dispositivos USB conectados
-- Reset/ejecao de dispositivo especifico
+- Enumeracao de dispositivos USB conectados via sysfs (Linux) ou SetupAPI (Windows)
+- Reset de dispositivo via usbfs / IOCTL
 - Leitura de descritores USB (device, configuration, string, etc.)
-- Transferencia de controle e bulk raw
-- Leitura e escrita de setores raw (dispositivos de armazenamento)
+- Transferencias de controle e bulk raw
+- Leitura e escrita de setores raw via protocolo USB MSC BOT (Linux)
+- Leitura e escrita de setores raw via ReadFile/WriteFile OVERLAPPED (Windows)
 - Envio de DFU DETACH para modo bootloader
 
 ## Requisitos
 
 ### Linux
-- Kernel com suporte a usbfs (`/dev/bus/usb`)
+- Kernel com suporte a usbfs (`/dev/bus/usb`) e sysfs (`/sys/bus/usb/devices`)
 - `g++` com suporte a C++17
-- Root ou membership no grupo `plugdev` com udev rules adequadas
+- Root ou membership no grupo `plugdev` com udev rules configuradas
 
 ### Windows
 - MinGW-w64 ou MSVC com suporte a C++17
+- Windows SDK (inclui `setupapi.h`, `usbioctl.h`, `usb.h`)
 - Privilegios de administrador
-- Windows DDK headers (inclusas no Windows SDK)
 
 ## Compilacao
 
@@ -29,6 +30,18 @@ Ferramenta de linha de comando em C++ puro para interacao direta com hardware US
 
 ```bash
 make
+```
+
+### Linux (debug com sanitizers)
+
+```bash
+make debug
+```
+
+### Linux (instalar em /usr/local/bin)
+
+```bash
+sudo make install
 ```
 
 ### Windows (MinGW)
@@ -40,7 +53,7 @@ mingw32-make -f Makefile.win
 ### Windows (MSVC)
 
 ```bat
-cl /std:c++17 /O2 main.cpp usb_windows.cpp /link setupapi.lib cfgmgr32.lib /out:usb-tool.exe
+cl /std:c++17 /O2 main.cpp usb_windows.cpp /link setupapi.lib cfgmgr32.lib /out:usbctl.exe
 ```
 
 ## Uso
@@ -48,96 +61,106 @@ cl /std:c++17 /O2 main.cpp usb_windows.cpp /link setupapi.lib cfgmgr32.lib /out:
 ### Listar dispositivos
 
 ```bash
-sudo ./usb-tool listar
+sudo ./usbctl listar
 ```
 
 Saida exemplo:
 ```
-[0] 0951:1666  Kingston DataTraveler (serial: 001234)
-     caminho: /sys/bus/usb/devices/1-1/
-[1] 046d:c52b  Logitech Unifying Receiver (serial: -)
-     caminho: /sys/bus/usb/devices/1-2/
+[0] 0951:1666  Kingston DataTraveler  serial: 001234
+     /sys/bus/usb/devices/1-1/
+[1] 046d:c52b  Logitech Unifying Receiver  serial: -
+     /sys/bus/usb/devices/1-2/
 ```
 
 ### Resetar dispositivo
 
 ```bash
-sudo ./usb-tool resetar 0
+sudo ./usbctl resetar 0
 ```
 
 ### Ler descritor
 
 ```bash
 # descritor de dispositivo (tipo 01)
-sudo ./usb-tool descritor 0 01
+sudo ./usbctl descritor 0 01
 
 # descritor de configuracao (tipo 02)
-sudo ./usb-tool descritor 0 02
+sudo ./usbctl descritor 0 02
 
 # descritor de string indice 1 (tipo 03)
-sudo ./usb-tool descritor 0 03 01
+sudo ./usbctl descritor 0 03 01
 ```
 
 ### Transferencia de controle
 
 ```bash
-# usb-tool controle <indice> <bmRequestType> <bRequest> <wValue> <wIndex> <hex_dados> <r|w>
+# usbctl controle <indice> <bmRequestType> <bRequest> <wValue> <wIndex> <hex_dados> <r|w>
 
-# leitura (r): GET_DESCRIPTOR device
-sudo ./usb-tool controle 0 80 06 0100 0000 12000000 r
+# leitura: GET_DESCRIPTOR device
+sudo ./usbctl controle 0 80 06 0100 0000 12000000 r
 
-# escrita (w): SET_CONFIGURATION
-sudo ./usb-tool controle 0 00 09 0100 0000 "" w
+# escrita: SET_CONFIGURATION
+sudo ./usbctl controle 0 00 09 0100 0000 "" w
 ```
 
 ### Transferencia bulk
 
 ```bash
-# usb-tool bulk <indice> <endpoint> <hex_dados> <r|w>
+# usbctl bulk <indice> <endpoint> <hex_dados> <r|w>
 
 # envio para endpoint 0x01 (bulk OUT)
-sudo ./usb-tool bulk 0 01 deadbeef w
+sudo ./usbctl bulk 0 01 deadbeef w
 
 # leitura do endpoint 0x81 (bulk IN), buffer de 64 bytes
-sudo ./usb-tool bulk 0 81 0000000000000000000000000000000000000000000000000000000000000000 r
+sudo ./usbctl bulk 0 81 0000000000000000000000000000000000000000000000000000000000000000 r
 ```
 
 ### Leitura de setor raw (storage)
 
 ```bash
 # le 1 setor a partir do LBA 0 (MBR)
-sudo ./usb-tool ler-setor 0 0 1
+sudo ./usbctl ler-setor 0 0 1
 
 # le 4 setores a partir do LBA 2048
-sudo ./usb-tool ler-setor 0 2048 4
+sudo ./usbctl ler-setor 0 2048 4
 ```
 
 ### Escrita de setor raw
 
 ```bash
-# ! operacao irreversivel, sobrescreve dados permanentemente
+# operacao irreversivel, sobrescreve dados permanentemente
 # hex_dados deve ter exatamente N*512 bytes (N setores)
-sudo ./usb-tool escrever-setor 0 0 <512_bytes_em_hex>
+sudo ./usbctl escrever-setor 0 0 <512_bytes_em_hex>
 ```
 
 ### Modo bootloader (DFU)
 
 ```bash
-# envia DFU_DETACH para o dispositivo (requer suporte a USB DFU class)
-sudo ./usb-tool bootloader 0
+# envia DFU_DETACH (requer suporte a USB DFU class no firmware)
+sudo ./usbctl bootloader 0
 ```
 
-## Estrutura do codigo
+## Estrutura
 
 ```
-usb-tool/
+usbctl/
   usb.h            interface comum entre plataformas
-  usb_linux.cpp    implementacao Linux (usbfs, ioctl, sysfs)
-  usb_windows.cpp  implementacao Windows (SetupAPI, DeviceIoControl)
-  main.cpp         CLI e logica de entrada
+  usb_linux.cpp    implementacao Linux (usbfs, ioctl, sysfs, protocolo BOT)
+  usb_windows.cpp  implementacao Windows (SetupAPI, DeviceIoControl, OVERLAPPED I/O)
+  main.cpp         CLI e despacho de comandos
   Makefile         build para Linux
   Makefile.win     build para Windows (MinGW)
 ```
+
+## Protocolo USB MSC BOT (Linux)
+
+Leitura e escrita de setores seguem o protocolo Bulk-Only Transport definido em USB MSC:
+
+1. CBW (Command Block Wrapper) enviado via bulk OUT com o CDB SCSI dentro
+2. Transferencia de dados via bulk IN (leitura) ou bulk OUT (escrita)
+3. CSW (Command Status Wrapper) recebido via bulk IN para confirmar sucesso
+
+Endpoints assumidos: bulk OUT `0x01`, bulk IN `0x81`. Dispositivos com endpoints diferentes precisam que o codigo seja ajustado ou que os endpoints sejam descobertos a partir dos descritores de interface.
 
 ## APIs utilizadas
 
@@ -145,28 +168,27 @@ usb-tool/
 - `/sys/bus/usb/devices/` - enumeracao via sysfs
 - `/dev/bus/usb/BBB/DDD` - acesso direto via usbfs
 - `USBDEVFS_RESET` - reset de dispositivo
-- `USBDEVFS_CONTROL` - transferencias de controle
-- `USBDEVFS_BULK` - transferencias bulk
-- `USBDEVFS_GET_DESCRIPTOR` - leitura de descritores
+- `USBDEVFS_CONTROL` - transferencias de controle e DFU DETACH
+- `USBDEVFS_BULK` - transferencias bulk e protocolo BOT
 
 ### Windows
 - `SetupDiGetClassDevs` / `SetupDiEnumDeviceInfo` - enumeracao
 - `CreateFile` - abertura de handle
 - `IOCTL_USB_RESET_PORT` - reset
 - `IOCTL_USB_GET_DESCRIPTOR_FROM_NODE_CONNECTION` - descritores
-- `ReadFile` / `WriteFile` com OVERLAPPED - I/O em disco
+- `ReadFile` / `WriteFile` com `OVERLAPPED` - I/O assincrono em disco
 
 ## Limitacoes
 
-- **Transferencias de controle/bulk no Windows** requerem WinUSB ou driver de kernel customizado instalado para o dispositivo alvo. Sem ele, essas operacoes retornam erro.
-- **Leitura/escrita de setor** funciona apenas em dispositivos de armazenamento em massa. No Windows, abrir o dispositivo como `\\.\PhysicalDriveN` em vez do caminho do hub USB.
-- **Modo bootloader (DFU)** funciona apenas se o firmware do dispositivo implementar USB DFU class (ex: STM32, ATmega32u4, ESP32-S2 em modo DFU).
-- **Acesso a memoria interna** de dispositivos nao-storage (HID, audio, etc.) nao e possivel via APIs padrao sem firmware cooperativo.
+- Transferencias de controle e bulk no Windows requerem WinUSB ou driver de kernel customizado instalado para o dispositivo.
+- Leitura e escrita de setor funcionam apenas em dispositivos de armazenamento em massa. No Windows, o dispositivo deve ser aberto como `\\.\PhysicalDriveN`.
+- Modo bootloader (DFU) funciona apenas se o firmware implementar USB DFU class (STM32, ATmega32u4, ESP32-S2, etc).
+- Os endpoints de bulk OUT (`0x01`) e bulk IN (`0x81`) sao assumidos como fixos. Dispositivos com configuracao diferente requerem ajuste.
 - Operacoes de baixo nivel requerem root no Linux e administrador no Windows.
 
 ## Permissoes no Linux (sem root)
 
-Criar udev rule em `/etc/udev/rules.d/99-usb-tool.rules`:
+Criar udev rule em `/etc/udev/rules.d/99-usbctl.rules`:
 
 ```
 SUBSYSTEM=="usb", MODE="0666", GROUP="plugdev"

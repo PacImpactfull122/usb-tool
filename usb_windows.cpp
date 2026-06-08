@@ -12,12 +12,24 @@
 #pragma comment(lib, "setupapi.lib")
 #pragma comment(lib, "cfgmgr32.lib")
 
+// * WideCharToMultiByte com CP_UTF8 garante suporte a caminhos com caracteres nao-ascii
 static std::string wstrParaStr(const std::wstring& ws) {
     if (ws.empty()) return "";
     int tam = WideCharToMultiByte(CP_UTF8, 0, ws.c_str(), -1, nullptr, 0, nullptr, nullptr);
+    if (tam <= 0) return "";
     std::string s(tam - 1, '\0');
     WideCharToMultiByte(CP_UTF8, 0, ws.c_str(), -1, s.data(), tam, nullptr, nullptr);
     return s;
+}
+
+// * MultiByteToWideChar necessario para caminhos com caracteres fora do ascii basico
+static std::wstring strParaWstr(const std::string& s) {
+    if (s.empty()) return {};
+    int tam = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, nullptr, 0);
+    if (tam <= 0) return {};
+    std::wstring ws(tam - 1, L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, ws.data(), tam);
+    return ws;
 }
 
 std::vector<DispositivoUsb> enumerarDispositivos() {
@@ -73,7 +85,7 @@ std::vector<DispositivoUsb> enumerarDispositivos() {
 }
 
 intptr_t abrirDispositivo(const DispositivoUsb& dev) {
-    std::wstring ws(dev.caminho.begin(), dev.caminho.end());
+    std::wstring ws = strParaWstr(dev.caminho);
     HANDLE h = CreateFileW(ws.c_str(), GENERIC_READ | GENERIC_WRITE,
                            FILE_SHARE_READ | FILE_SHARE_WRITE,
                            nullptr, OPEN_EXISTING, FILE_FLAG_OVERLAPPED, nullptr);
@@ -81,12 +93,14 @@ intptr_t abrirDispositivo(const DispositivoUsb& dev) {
         h = CreateFileW(ws.c_str(), GENERIC_READ,
                         FILE_SHARE_READ | FILE_SHARE_WRITE,
                         nullptr, OPEN_EXISTING, 0, nullptr);
+    if (h == INVALID_HANDLE_VALUE) return (intptr_t)-1;
     return (intptr_t)h;
 }
 
 void fecharDispositivo(intptr_t handle) {
+    if (handle < 0) return;
     HANDLE h = (HANDLE)handle;
-    if (h && h != INVALID_HANDLE_VALUE) CloseHandle(h);
+    if (h != INVALID_HANDLE_VALUE) CloseHandle(h);
 }
 
 bool resetarDispositivo(intptr_t handle) {
@@ -101,12 +115,12 @@ std::vector<uint8_t> lerDescritor(intptr_t handle, uint8_t tipo, uint8_t indice)
         uint8_t dados[255];
     } buf{};
 
-    buf.req.ConnectionIndex           = 0;
-    buf.req.SetupPacket.bmRequest     = 0x80;
-    buf.req.SetupPacket.bRequest      = 0x06;
-    buf.req.SetupPacket.wValue        = (uint16_t)((tipo << 8) | indice);
-    buf.req.SetupPacket.wIndex        = 0;
-    buf.req.SetupPacket.wLength       = 255;
+    buf.req.ConnectionIndex       = 0;
+    buf.req.SetupPacket.bmRequest = 0x80;
+    buf.req.SetupPacket.bRequest  = 0x06;
+    buf.req.SetupPacket.wValue    = (uint16_t)((tipo << 8) | indice);
+    buf.req.SetupPacket.wIndex    = 0;
+    buf.req.SetupPacket.wLength   = 255;
 
     DWORD retornado = 0;
     if (!DeviceIoControl((HANDLE)handle,
@@ -115,7 +129,7 @@ std::vector<uint8_t> lerDescritor(intptr_t handle, uint8_t tipo, uint8_t indice)
         return {};
 
     uint32_t tam = retornado > sizeof(USB_DESCRIPTOR_REQUEST)
-                   ? retornado - sizeof(USB_DESCRIPTOR_REQUEST) : 0;
+                   ? retornado - (uint32_t)sizeof(USB_DESCRIPTOR_REQUEST) : 0;
     return std::vector<uint8_t>(buf.dados, buf.dados + tam);
 }
 
@@ -126,6 +140,7 @@ bool transferirControle(intptr_t handle,
     // ! requer winusb ou driver de kernel customizado instalado para o dispositivo
     (void)handle; (void)bmRequestType; (void)bRequest;
     (void)wValue; (void)wIndex; (void)dados; (void)enviar;
+    std::fprintf(stderr, "transferencia de controle requer winusb instalado para o dispositivo\n");
     return false;
 }
 
@@ -133,12 +148,13 @@ bool transferirBulk(intptr_t handle, uint8_t endpoint,
                     std::vector<uint8_t>& dados, bool enviar) {
     // ! requer winusb ou driver de kernel customizado instalado para o dispositivo
     (void)handle; (void)endpoint; (void)dados; (void)enviar;
+    std::fprintf(stderr, "transferencia bulk requer winusb instalado para o dispositivo\n");
     return false;
 }
 
 bool lerSetor(intptr_t handle, uint64_t lba, uint32_t qtd, std::vector<uint8_t>& buf) {
     const uint32_t tamSetor = 512;
-    buf.resize(qtd * tamSetor);
+    buf.resize((size_t)(qtd * tamSetor));
 
     LARGE_INTEGER offset;
     offset.QuadPart = (LONGLONG)(lba * tamSetor);
@@ -147,6 +163,7 @@ bool lerSetor(intptr_t handle, uint64_t lba, uint32_t qtd, std::vector<uint8_t>&
     ov.Offset     = offset.LowPart;
     ov.OffsetHigh = (DWORD)offset.HighPart;
     ov.hEvent     = CreateEvent(nullptr, TRUE, FALSE, nullptr);
+    if (!ov.hEvent) return false;
 
     DWORD lido = 0;
     BOOL ok = ReadFile((HANDLE)handle, buf.data(), (DWORD)buf.size(), &lido, &ov);
@@ -161,6 +178,7 @@ bool lerSetor(intptr_t handle, uint64_t lba, uint32_t qtd, std::vector<uint8_t>&
 
 bool escreverSetor(intptr_t handle, uint64_t lba, uint32_t qtd,
                    const std::vector<uint8_t>& dados) {
+    (void)qtd;
     const uint32_t tamSetor = 512;
     LARGE_INTEGER offset;
     offset.QuadPart = (LONGLONG)(lba * tamSetor);
@@ -169,6 +187,7 @@ bool escreverSetor(intptr_t handle, uint64_t lba, uint32_t qtd,
     ov.Offset     = offset.LowPart;
     ov.OffsetHigh = (DWORD)offset.HighPart;
     ov.hEvent     = CreateEvent(nullptr, TRUE, FALSE, nullptr);
+    if (!ov.hEvent) return false;
 
     DWORD escrito = 0;
     BOOL ok = WriteFile((HANDLE)handle, dados.data(), (DWORD)dados.size(), &escrito, &ov);
@@ -176,13 +195,13 @@ bool escreverSetor(intptr_t handle, uint64_t lba, uint32_t qtd,
         ok = GetOverlappedResult((HANDLE)handle, &ov, &escrito, TRUE);
 
     CloseHandle(ov.hEvent);
-    (void)qtd;
     return ok != 0;
 }
 
 bool entrarModoBootloader(intptr_t handle) {
     // ! requer winusb ou driver dfu instalado para o dispositivo
     (void)handle;
+    std::fprintf(stderr, "modo bootloader requer winusb ou driver dfu instalado\n");
     return false;
 }
 

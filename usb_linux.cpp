@@ -10,6 +10,32 @@
 #include <fstream>
 #include <cstring>
 #include <cstdio>
+#include <cerrno>
+
+static const uint32_t TAM_SETOR = 512;
+
+// * estruturas do protocolo BOT definidas localmente para evitar dependencia de cabecalhos externos
+struct __attribute__((packed)) CBW {
+    uint32_t assinatura;
+    uint32_t tag;
+    uint32_t tamanhoTransferencia;
+    uint8_t  flags;
+    uint8_t  lun;
+    uint8_t  tamCDB;
+    uint8_t  cdb[16];
+};
+
+struct __attribute__((packed)) CSW {
+    uint32_t assinatura;
+    uint32_t tag;
+    uint32_t residuo;
+    uint8_t  status;
+};
+
+static constexpr uint32_t CBW_ASSINATURA = 0x43425355u;
+static constexpr uint32_t CSW_ASSINATURA = 0x53425355u;
+static constexpr uint8_t  CBW_FLAG_IN    = 0x80u;
+static constexpr uint8_t  CBW_FLAG_OUT   = 0x00u;
 
 static std::string lerSysfs(const std::string& caminho) {
     std::ifstream arq(caminho);
@@ -21,7 +47,15 @@ static std::string lerSysfs(const std::string& caminho) {
 
 static uint16_t hexParaU16(const std::string& s) {
     if (s.empty()) return 0;
-    return (uint16_t)std::stoul(s, nullptr, 16);
+    try { return (uint16_t)std::stoul(s, nullptr, 16); }
+    catch (...) { return 0; }
+}
+
+static int lerSysfsInt(const std::string& caminho) {
+    std::string val = lerSysfs(caminho);
+    if (val.empty()) return 0;
+    try { return std::stoi(val); }
+    catch (...) { return 0; }
 }
 
 std::vector<DispositivoUsb> enumerarDispositivos() {
@@ -33,9 +67,9 @@ std::vector<DispositivoUsb> enumerarDispositivos() {
     struct dirent* ent;
     while ((ent = readdir(dir))) {
         std::string nome = ent->d_name;
-        // * nos com dois pontos sao interfaces, nao dispositivos
-        if (nome.find(':') != std::string::npos) continue;
         if (nome == "." || nome == "..") continue;
+        // * nos com dois pontos sao interfaces, nao dispositivos raiz
+        if (nome.find(':') != std::string::npos) continue;
 
         std::string no = base + nome + "/";
         std::string vid = lerSysfs(no + "idVendor");
@@ -49,11 +83,8 @@ std::vector<DispositivoUsb> enumerarDispositivos() {
         dev.produto    = lerSysfs(no + "product");
         dev.serial     = lerSysfs(no + "serial");
         dev.caminho    = no;
-
-        std::string busStr = lerSysfs(no + "busnum");
-        std::string devStr = lerSysfs(no + "devnum");
-        dev.barramento = busStr.empty() ? 0 : (uint8_t)std::stoi(busStr);
-        dev.endereco   = devStr.empty() ? 0 : (uint8_t)std::stoi(devStr);
+        dev.barramento = (uint8_t)lerSysfsInt(no + "busnum");
+        dev.endereco   = (uint8_t)lerSysfsInt(no + "devnum");
 
         lista.push_back(dev);
     }
@@ -71,7 +102,7 @@ intptr_t abrirDispositivo(const DispositivoUsb& dev) {
 }
 
 void fecharDispositivo(intptr_t handle) {
-    if (handle > 0) close((int)handle);
+    if (handle >= 0) close((int)handle);
 }
 
 bool resetarDispositivo(intptr_t handle) {
@@ -90,7 +121,7 @@ std::vector<uint8_t> lerDescritor(intptr_t handle, uint8_t tipo, uint8_t indice)
     ct.data         = buf.data();
     int ret = ioctl((int)handle, USBDEVFS_CONTROL, &ct);
     if (ret < 0) return {};
-    buf.resize(ret);
+    buf.resize((size_t)ret);
     return buf;
 }
 
@@ -108,7 +139,7 @@ bool transferirControle(intptr_t handle,
     ct.data         = dados.empty() ? nullptr : dados.data();
     int ret = ioctl((int)handle, USBDEVFS_CONTROL, &ct);
     if (ret < 0) return false;
-    if (!enviar) dados.resize(ret);
+    if (!enviar) dados.resize((size_t)ret);
     return true;
 }
 
@@ -121,15 +152,53 @@ bool transferirBulk(intptr_t handle, uint8_t endpoint,
     bt.data    = dados.data();
     int ret = ioctl((int)handle, USBDEVFS_BULK, &bt);
     if (ret < 0) return false;
-    if (!enviar) dados.resize(ret);
+    if (!enviar) dados.resize((size_t)ret);
     return true;
 }
 
-bool lerSetor(intptr_t handle, uint64_t lba, uint32_t qtd, std::vector<uint8_t>& buf) {
-    const uint32_t tamSetor = 512;
-    buf.resize(qtd * tamSetor, 0);
+// * protocolo BOT: envia cbw via bulk out, transfere dados, valida csw via bulk in
+static bool botExec(int fd, uint8_t epOut, uint8_t epIn,
+                    const uint8_t* cdb, uint8_t tamCDB,
+                    void* dados, uint32_t tamDados, bool leitura) {
+    static uint32_t tagSeq = 1;
 
-    // * cdb scsi read(10)
+    CBW cbw{};
+    cbw.assinatura          = CBW_ASSINATURA;
+    cbw.tag                 = tagSeq++;
+    cbw.tamanhoTransferencia = tamDados;
+    cbw.flags               = leitura ? CBW_FLAG_IN : CBW_FLAG_OUT;
+    cbw.lun                 = 0;
+    cbw.tamCDB              = tamCDB;
+    std::memcpy(cbw.cdb, cdb, tamCDB);
+
+    struct usbdevfs_bulktransfer bt{};
+    bt.ep      = epOut;
+    bt.len     = sizeof(CBW);
+    bt.timeout = 5000;
+    bt.data    = &cbw;
+    if (ioctl(fd, USBDEVFS_BULK, &bt) < 0) return false;
+
+    if (tamDados > 0) {
+        bt.ep      = leitura ? epIn : epOut;
+        bt.len     = tamDados;
+        bt.timeout = 10000;
+        bt.data    = dados;
+        if (ioctl(fd, USBDEVFS_BULK, &bt) < 0) return false;
+    }
+
+    CSW csw{};
+    bt.ep      = epIn;
+    bt.len     = sizeof(CSW);
+    bt.timeout = 5000;
+    bt.data    = &csw;
+    if (ioctl(fd, USBDEVFS_BULK, &bt) < 0) return false;
+
+    return csw.assinatura == CSW_ASSINATURA && csw.status == 0;
+}
+
+bool lerSetor(intptr_t handle, uint64_t lba, uint32_t qtd, std::vector<uint8_t>& buf) {
+    buf.assign((size_t)(qtd * TAM_SETOR), 0);
+
     uint8_t cdb[10] = {
         0x28, 0x00,
         (uint8_t)(lba >> 24), (uint8_t)(lba >> 16),
@@ -139,26 +208,12 @@ bool lerSetor(intptr_t handle, uint64_t lba, uint32_t qtd, std::vector<uint8_t>&
         0x00
     };
 
-    struct usbdevfs_ctrltransfer ct{};
-    ct.bRequestType = 0x21;
-    ct.bRequest     = 0x00;
-    ct.wValue = ct.wIndex = 0;
-    ct.wLength = sizeof(cdb);
-    ct.timeout = 5000;
-    ct.data    = cdb;
-    if (ioctl((int)handle, USBDEVFS_CONTROL, &ct) < 0) return false;
-
-    struct usbdevfs_bulktransfer bt{};
-    bt.ep      = 0x81;
-    bt.len     = (uint32_t)buf.size();
-    bt.timeout = 5000;
-    bt.data    = buf.data();
-    return ioctl((int)handle, USBDEVFS_BULK, &bt) >= 0;
+    return botExec((int)handle, 0x01, 0x81, cdb, sizeof(cdb),
+                   buf.data(), (uint32_t)buf.size(), true);
 }
 
 bool escreverSetor(intptr_t handle, uint64_t lba, uint32_t qtd,
                    const std::vector<uint8_t>& dados) {
-    // * cdb scsi write(10)
     uint8_t cdb[10] = {
         0x2a, 0x00,
         (uint8_t)(lba >> 24), (uint8_t)(lba >> 16),
@@ -168,29 +223,16 @@ bool escreverSetor(intptr_t handle, uint64_t lba, uint32_t qtd,
         0x00
     };
 
-    struct usbdevfs_ctrltransfer ct{};
-    ct.bRequestType = 0x21;
-    ct.bRequest     = 0x00;
-    ct.wValue = ct.wIndex = 0;
-    ct.wLength = sizeof(cdb);
-    ct.timeout = 5000;
-    ct.data    = cdb;
-    if (ioctl((int)handle, USBDEVFS_CONTROL, &ct) < 0) return false;
-
-    struct usbdevfs_bulktransfer bt{};
-    bt.ep      = 0x01;
-    bt.len     = (uint32_t)dados.size();
-    bt.timeout = 5000;
-    bt.data    = const_cast<uint8_t*>(dados.data());
-    return ioctl((int)handle, USBDEVFS_BULK, &bt) >= 0;
+    return botExec((int)handle, 0x01, 0x81, cdb, sizeof(cdb),
+                   const_cast<uint8_t*>(dados.data()), (uint32_t)dados.size(), false);
 }
 
 bool entrarModoBootloader(intptr_t handle) {
-    // * dfu detach: bmRequestType=0x21, bRequest=0x00
+    // * dfu detach: classe dfu, bRequest=0x00, wValue=timeout em ms
     struct usbdevfs_ctrltransfer ct{};
     ct.bRequestType = 0x21;
     ct.bRequest     = 0x00;
-    ct.wValue       = 5000;
+    ct.wValue       = 1000;
     ct.wIndex       = 0;
     ct.wLength      = 0;
     ct.timeout      = 2000;
