@@ -208,7 +208,46 @@ timestamp          tipo xfer  dir  ep   dev  status  len  dados
   1718123456.023456  S    int   IN   81   3    0       8    00 00 00 00 00 00 00 00
 ```
 
+### Analise forense do dispositivo
 
+Identifica automaticamente o tipo de dispositivo, decodifica todos os descritores, exibe strings e detecta capacidades (HID, storage, audio, video, DFU, hub). Para HID, exibe o endpoint interrupt IN encontrado e o HID report descriptor decodificado:
+
+```bash
+sudo ./usbctl analisar 0
+```
+
+Saida exemplo (teclado HID):
+```
+=== analise do dispositivo [0] ===
+
+  bcdUSB           : 2.00
+  idVendor         : 04d9
+  idProduct        : a01c
+
+  strings:
+    [1] SINO WEALTH ELECTRONIC LTD.
+    [2] USB Keyboard
+
+=== interfaces e endpoints ===
+
+  interface 0 (alt=0)
+    classe    : 0x03 (hid)
+    endpoints : 1
+      ep 0x81  interrupt     IN    max=   8  intervalo=10
+
+=== capacidades detectadas ===
+
+  hid detectado
+    endpoint interrupt IN: 0x81
+    comando: sudo ./usbctl hid-ler 0
+
+=== hid report descriptor ===
+
+  Usage Page(generic desktop)  [0x0001]
+  ...
+```
+
+### Informacoes detalhadas
 
 ```bash
 sudo ./usbctl info 0
